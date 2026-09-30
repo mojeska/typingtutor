@@ -879,8 +879,10 @@ def play_lesson(scr, prog, i):
 
 
 def taught(prog):
-    """Characters taught so far on this layout, and whether capitals are."""
-    return lesson_chars(lay(prog)["unlocked"])
+    """Characters from the lessons passed so far on this layout (at least the first
+    lesson's), and whether capitals are among them. "unlocked" is the lesson the
+    user is currently on, which hasn't been learned yet."""
+    return lesson_chars(max(0, lay(prog)["unlocked"] - 1))
 
 
 def play_weak(scr, prog):
@@ -1037,7 +1039,7 @@ def level_news(level, ctx):
 
 def type_secs(n, wpm):
     """Rough time to spot and type an n-character item."""
-    return 1.2 + n * 12 / wpm
+    return 1.5 + n * 12 / wpm
 
 
 def run_game(scr, ctx, wpm):
@@ -1051,6 +1053,7 @@ def run_game(scr, ctx, wpm):
     keys, confusions = {}, {}
     banner, banner_ttl, flash = "Level 1 - go!", 2.0, 0.0
     spawn_in, play_time, last_hit = 0.8, 0.0, None
+    ease = 1.0  # < 1 slows new items after a miss; recovers as items are cleared
     paused = quit_game = False
     last = time.monotonic()
     while lives > 0 and not quit_game:
@@ -1073,10 +1076,10 @@ def run_game(scr, ctx, wpm):
                     if not any(it["y"] < 3 / rows and x - 2 < it["x"] + len(it["text"])
                                and it["x"] - 2 < x + len(text) for it in items):
                         break
-                slack = max(1.4, 4.0 * 0.88 ** (level - 1))
+                slack = max(1.4, 5.0 * 0.88 ** (level - 1))
                 items.append(dict(text=text, x=x, y=0.0, typed=0,
-                                  speed=1 / (type_secs(len(text), wpm) * slack)))
-                spawn_in = type_secs(len(text), wpm) * max(0.9, 2.5 * 0.9 ** (level - 1))
+                                  speed=ease / (type_secs(len(text), wpm) * slack)))
+                spawn_in = type_secs(len(text), wpm) * max(0.9, 3.0 * 0.9 ** (level - 1)) / ease
             for it in items[:]:
                 it["y"] += it["speed"] * dt
                 if it["y"] >= 1:
@@ -1084,6 +1087,7 @@ def run_game(scr, ctx, wpm):
                     lives -= 1
                     combo = 0
                     flash = 0.5
+                    ease = max(0.6, ease * 0.85)
                     if it is target:
                         target = None
             for p in popups[:]:
@@ -1200,6 +1204,7 @@ def run_game(scr, ctx, wpm):
             items.remove(target)
             target = None
             cleared += 1
+            ease = min(1.0, ease + 0.03)
             if cleared >= level * CLEARS_PER_LEVEL:
                 level += 1
                 banner, banner_ttl = f"Level {level} - {level_news(level, ctx)}", 2.5
