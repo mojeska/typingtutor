@@ -470,10 +470,42 @@ def open_profile(path, name):
     prog = load_progress()
     prog.setdefault("name", name)
     save_progress(prog)
-    settings = load_settings()
-    settings["last_profile"] = path.stem
-    SETTINGS_FILE.write_text(json.dumps(settings))
+    remember_last(path.stem)
     return prog
+
+
+def remember_last(stem):
+    settings = load_settings()
+    settings["last_profile"] = stem
+    SETTINGS_FILE.write_text(json.dumps(settings))
+
+
+def rename_profile(path, prog, new_name):
+    """Rename a profile (moving its file if the name's file name changes).
+    Returns an error message, or None on success."""
+    new_path = profile_path(new_name)
+    if new_path != path and new_path.exists():
+        return f"There's already a profile called {json.loads(new_path.read_text()).get('name', new_name)}."
+    prog["name"] = new_name
+    tmp = new_path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(prog, indent=1))
+    tmp.replace(new_path)
+    if new_path != path:
+        path.unlink()
+        if load_settings().get("last_profile") == path.stem:
+            remember_last(new_path.stem)
+    return None
+
+
+def remove_profile(path):
+    """Move a profile into removed/ (not erased, so it can be restored by hand)."""
+    removed = DATA_DIR / "removed"
+    removed.mkdir(parents=True, exist_ok=True)
+    dest = removed / f"{path.stem}-{datetime.now():%Y%m%d-%H%M%S}.json"
+    path.replace(dest)
+    if load_settings().get("last_profile") == path.stem:
+        remember_last(None)
+    return dest
 
 
 def record(prog, mode, lesson_idx, res, **extra):
@@ -726,8 +758,9 @@ def message(scr, title, lines):
     wait_key(scr)
 
 
-def menu(scr, title, items, header=(), sel=0, mood=None):
-    """Vertical menu. items: [(label, enabled)]. Returns index or None."""
+def menu(scr, title, items, header=(), sel=0, mood=None, hotkeys=None):
+    """Vertical menu. items: [(label, enabled)]. Returns index or None.
+    hotkeys: {key: footer hint}; pressing one returns (key, index)."""
     scr.timeout(-1)
     enabled = [i for i, (_, en) in enumerate(items) if en]
     if sel not in enabled:
@@ -751,9 +784,12 @@ def menu(scr, title, items, header=(), sel=0, mood=None):
             label, en = items[i]
             attr = curses.A_REVERSE if i == sel else (0 if en else curses.A_DIM)
             put(scr, y + i - top, 4, f" {label} ", attr)
-        footer(scr, h - 1, 2, "Up/Down or j/k: move   Enter: select   Esc/q: back")
+        footer(scr, h - 1, 2, "Up/Down or j/k: move   Enter: select   " +
+               "".join(f"{k}: {hint}   " for k, hint in (hotkeys or {}).items()) + "Esc/q: back")
         scr.refresh()
         ch = scr.get_wch()
+        if hotkeys and ch in hotkeys:
+            return ch, sel
         if ch in (curses.KEY_UP, "k"):
             sel = max([i for i in enabled if i < sel], default=sel)
         elif ch in (curses.KEY_DOWN, "j"):
@@ -1730,6 +1766,36 @@ def ask_name(scr, lines):
             return name[:30]
 
 
+def rename_dialog(scr, path, prog):
+    old = prog.get("name", path.stem)
+    while True:
+        name = prompt(scr, f"Rename {old}", ["Lessons, statistics and scores stay with the profile.",
+                                             "", "New name:"], old, complete=False)
+        if not name or name == old:
+            return
+        error = rename_profile(path, prog, name[:30])
+        if not error:
+            return
+        message(scr, f"Rename {old}", [error, "Pick a different name."])
+
+
+def remove_dialog(scr, path, prog):
+    name = prog.get("name", path.stem)
+    sessions = len(prog.get("sessions", []))
+    passed = sum(1 for lk in prog.get("layouts", {}).values()
+                 for r in lk.get("lessons", {}).values() if r.get("passed"))
+    choice = menu(scr, f"Remove {name}?", [("Keep this profile", True),
+                                            (f"Remove {name}", True)],
+                  [f"{name} has {passed} lesson(s) passed and {sessions} session(s) recorded.",
+                   "The profile disappears from the list. Its file is moved to the",
+                   f"{str(DATA_DIR / 'removed').replace(str(Path.home()), '~', 1)} folder "
+                   "rather than erased,",
+                   "so it can be restored by moving it back into profiles/."],
+                  mood="shocked")
+    if choice == 1:
+        remove_profile(path)
+
+
 def choose_profile(scr):
     """'Who's typing?' Returns the chosen profile's progress, or None to quit."""
     while True:
@@ -1754,9 +1820,14 @@ def choose_profile(scr):
         items = [(profile_label(p), True) for _, p in profiles] + [("+ New profile", True)]
         sel = next((i for i, (f, _) in enumerate(profiles) if f.stem == last), 0)
         i = menu(scr, "Who's typing?", items, ["Pick your name, or add a new profile."], sel,
-                 greeting_face())
+                 greeting_face(), hotkeys={"r": "rename", "d": "remove"})
         if i is None:
             return None
+        if isinstance(i, tuple):
+            key, i = i
+            if i < len(profiles):
+                (rename_dialog if key == "r" else remove_dialog)(scr, *profiles[i])
+            continue
         if i < len(profiles):
             path, p = profiles[i]
             return open_profile(path, p.get("name", path.stem))

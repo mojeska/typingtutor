@@ -70,6 +70,11 @@ profiles (or pick "+ New profile" and type a name); the last one used is presele
 has its own lessons, layout choice, statistics, mix-ups, custom-text places and game high scores.
 "Switch user" on the main menu goes back to the picker. Names are case-insensitive.
 
+In the picker, highlight a profile and press **r** to rename it (its progress goes with it) or
+**d** to remove it. Removing asks for confirmation and moves the file to
+`~/.local/share/typing-tutor/removed/` instead of erasing it; move it back into `profiles/` to
+restore it.
+
 ## Tracking
 
 - WPM uses the standard (characters / 5) per minute.
