@@ -1767,15 +1767,16 @@ def ask_name(scr, lines):
 
 
 def rename_dialog(scr, path, prog):
+    """Returns the profile's path afterwards (it moves if the name changes)."""
     old = prog.get("name", path.stem)
     while True:
         name = prompt(scr, f"Rename {old}", ["Lessons, statistics and scores stay with the profile.",
                                              "", "New name:"], old, complete=False)
         if not name or name == old:
-            return
+            return path
         error = rename_profile(path, prog, name[:30])
         if not error:
-            return
+            return profile_path(name[:30])
         message(scr, f"Rename {old}", [error, "Pick a different name."])
 
 
@@ -1794,10 +1795,13 @@ def remove_dialog(scr, path, prog):
                   mood="shocked")
     if choice == 1:
         remove_profile(path)
+        return None
+    return path
 
 
-def choose_profile(scr):
-    """'Who's typing?' Returns the chosen profile's progress, or None to quit."""
+def choose_profile(scr, current=None):
+    """'Who's typing?' Returns the chosen profile's progress, or None to quit.
+    `current` is the active profile's path when switching users: Esc goes back to it."""
     while True:
         profiles = list_profiles()
         if not profiles:
@@ -1822,11 +1826,16 @@ def choose_profile(scr):
         i = menu(scr, "Who's typing?", items, ["Pick your name, or add a new profile."], sel,
                  greeting_face(), hotkeys={"r": "rename", "d": "remove"})
         if i is None:
+            if current and current.exists():  # back to the user who was already typing
+                return open_profile(current, json.loads(current.read_text()).get("name", current.stem))
             return None
         if isinstance(i, tuple):
             key, i = i
             if i < len(profiles):
-                (rename_dialog if key == "r" else remove_dialog)(scr, *profiles[i])
+                path = profiles[i][0]
+                after = (rename_dialog if key == "r" else remove_dialog)(scr, *profiles[i])
+                if path == current:
+                    current = after
             continue
         if i < len(profiles):
             path, p = profiles[i]
@@ -1874,11 +1883,13 @@ def main(scr, user=None):
     except curses.error:
         pass
     init_colors()
+    current = None
     while True:
-        prog = open_profile(profile_path(user), user) if user else choose_profile(scr)
+        prog = open_profile(profile_path(user), user) if user else choose_profile(scr, current)
         user = None
         if prog is None or not main_menu(scr, prog):
             return
+        current = DATA_FILE
 
 
 def cli():
