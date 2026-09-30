@@ -557,6 +557,69 @@ def footer(scr, y, x, text):
         x += len(part)
 
 
+def text_width(s):
+    """Terminal columns taken by s (wide CJK characters count 2, combining marks 0)."""
+    return sum(0 if unicodedata.combining(c) else
+               2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in s)
+
+
+# The mascot's faces, from the reference sheet of fp-bits/mascota-ascii (MIT licence).
+# The table flip uses a plain ")" instead of the original full-width one, which
+# misaligns in terminals.
+FACES = dict(
+    normal="(°_°)", blink="(−_−)", happy="(^_^)", sleepy="(˘_˘)", disapproval="(ಠ_ಠ)",
+    frustrated="(>_<)", shocked="(⊙_⊙)", crying="(T_T)", shrug="¯\\_(ツ)_/¯",
+    surprised="(◉_◉)", unimpressed="(¬_¬)", left="(<_°)", right="(°_>)", up="(↑_↑)",
+    down="(↓_↓)", sleeping="(˘_˘)zzZ", dancing="♪(^_^)♪", table_flip="(╯°□°)╯",
+    hugging="(づ｡◕‿‿◕｡)づ", celebrating="(ノ^_^)ノ")
+SAD_FACES = {"crying", "frustrated", "disapproval", "table_flip", "shocked"}
+GLAD_FACES = {"happy", "dancing", "celebrating", "hugging"}
+
+
+def face_attr(mood):
+    color = RED if mood in SAD_FACES else GREEN if mood in GLAD_FACES else MIDDLE
+    return C(color) | curses.A_BOLD
+
+
+def greeting_face():
+    """A face for the main menu title: sleepy late at night, otherwise a random friendly one."""
+    if datetime.now().hour >= 23 or datetime.now().hour < 5:
+        return "sleeping"
+    return random.choice(["normal", "happy", "dancing", "celebrating", "hugging", "surprised",
+                          "right", "up"])
+
+
+def put_titled(scr, y, x, title, mood):
+    """A screen title followed by the mascot."""
+    put(scr, y, x, title, curses.A_BOLD | C(MIDDLE))
+    put(scr, y, x + len(title) + 2, FACES[mood], face_attr(mood))
+
+
+class Mascot:
+    """The game's mascot: shows a reaction for a moment, otherwise a face chosen from
+    the game state (passed to face()), blinking now and then."""
+
+    def __init__(self):
+        self.mood, self.hold = "surprised", 1.5
+        self.blink_in = random.uniform(3, 6)
+
+    def react(self, mood, secs=1.0):
+        self.mood, self.hold = mood, secs
+
+    def tick(self, dt):
+        self.hold -= dt
+        self.blink_in -= dt
+        if self.blink_in < -0.15:
+            self.blink_in = random.uniform(3, 6)
+
+    def face(self, idle_mood):
+        if self.hold > 0:
+            return self.mood
+        if idle_mood == "normal" and self.blink_in < 0:
+            return "blink"
+        return idle_mood
+
+
 def center_x(scr, width):
     return max(0, (scr.getmaxyx()[1] - width) // 2)
 
@@ -618,7 +681,7 @@ def message(scr, title, lines):
     wait_key(scr)
 
 
-def menu(scr, title, items, header=(), sel=0):
+def menu(scr, title, items, header=(), sel=0, mood=None):
     """Vertical menu. items: [(label, enabled)]. Returns index or None."""
     scr.timeout(-1)
     enabled = [i for i, (_, en) in enumerate(items) if en]
@@ -628,7 +691,10 @@ def menu(scr, title, items, header=(), sel=0):
     while True:
         scr.erase()
         h, w = scr.getmaxyx()
-        put(scr, 1, 2, title, curses.A_BOLD | C(MIDDLE))
+        if mood:
+            put_titled(scr, 1, 2, title, mood)
+        else:
+            put(scr, 1, 2, title, curses.A_BOLD | C(MIDDLE))
         y = 3
         for line in header:
             put(scr, y, 4, line)
@@ -826,6 +892,11 @@ def results(scr, heading, res, goal_wpm=None, passed=None, best=None, last_lesso
     if res["accuracy"] < PASS_ACCURACY:
         lines.append(("Tip: slow down. Speed comes from accuracy, not the other way round.",
                       curses.A_DIM))
+    if passed is not None:
+        mood = ("dancing" if last_lesson else "celebrating") if passed else "frustrated"
+    else:
+        mood = ("happy" if res["accuracy"] >= PASS_ACCURACY else
+                "normal" if res["accuracy"] >= 90 else "frustrated")
     can_advance = passed and not last_lesson
     enter = "next lesson" if can_advance else "try again"
     if passed is None:
@@ -835,7 +906,7 @@ def results(scr, heading, res, goal_wpm=None, passed=None, best=None, last_lesso
         scr.erase()
         h, w = scr.getmaxyx()
         x0 = center_x(scr, 64)
-        put(scr, 1, x0, heading, curses.A_BOLD | C(MIDDLE))
+        put_titled(scr, 1, x0, heading, mood)
         for i, (text, attr) in enumerate(lines):
             put(scr, 3 + i, x0, text, attr)
         footer(scr, h - 2, x0, f"Enter: {enter}    r: retry    Esc: menu")
@@ -1055,6 +1126,7 @@ def run_game(scr, ctx, wpm):
     spawn_in, play_time, last_hit = 0.8, 0.0, None
     ease = 1.0  # < 1 slows new items after a miss; recovers as items are cleared
     paused = quit_game = False
+    mascot, recent_errors, last_key = Mascot(), [], time.monotonic()
     last = time.monotonic()
     while lives > 0 and not quit_game:
         h, w = scr.getmaxyx()
@@ -1068,6 +1140,7 @@ def run_game(scr, ctx, wpm):
 
         if not (paused or small):
             play_time += dt
+            mascot.tick(dt)
             spawn_in -= dt
             if spawn_in <= 0 and len(items) < 4 + level:
                 text = game_item(level, ctx)
@@ -1088,6 +1161,7 @@ def run_game(scr, ctx, wpm):
                     combo = 0
                     flash = 0.5
                     ease = max(0.6, ease * 0.85)
+                    mascot.react("crying", 1.2)
                     if it is target:
                         target = None
             for p in popups[:]:
@@ -1129,6 +1203,22 @@ def run_game(scr, ctx, wpm):
             if banner_ttl > 0:
                 put(scr, 2 + rows // 3, fx + (fw - len(banner)) // 2, banner,
                     C(MIDDLE) | curses.A_BOLD)
+            # The mascot stands on the ground in the middle, watching the action.
+            mx = fx + fw // 2
+            if paused:
+                idle = "sleeping"
+            elif target:
+                dx = fx + 1 + target["x"] + len(target["text"]) // 2 - mx
+                idle = ("left" if dx < -6 else "right" if dx > 6 else
+                        "down" if target["y"] > 0.6 else "up")
+            elif any(it["y"] > 0.75 for it in items):
+                idle = "shocked"
+            elif items and now - last_key > 8:
+                idle = "unimpressed"
+            else:
+                idle = "normal"
+            mood = "sleeping" if paused else mascot.face(idle)
+            put(scr, 1 + rows, mx - text_width(FACES[mood]) // 2, FACES[mood], face_attr(mood))
             if target:
                 want = target["text"][target["typed"]]
                 base, shifted = base_key(want)
@@ -1171,12 +1261,18 @@ def run_game(scr, ctx, wpm):
         if not isinstance(ch, str) or not ch.isprintable() or ch == " ":
             continue
         ch = REMAP.get(ch, ch)
-        now = time.monotonic()
+        now = last_key = time.monotonic()
+
+        def oops():
+            recent_errors[:] = [t for t in recent_errors if now - t < 2] + [now]
+            mascot.react(*(("disapproval", 1.5) if len(recent_errors) >= 3 else ("frustrated", 0.6)))
+
         if target is None:
             cands = [it for it in items if it["text"][0] == ch]
             if not cands:
                 errors += 1
                 combo = 0
+                oops()
                 continue
             target = max(cands, key=lambda it: it["y"])  # the most urgent one
         want = target["text"][target["typed"]]
@@ -1186,6 +1282,7 @@ def run_game(scr, ctx, wpm):
             confusions[want + ch] = confusions.get(want + ch, 0) + 1
             errors += 1
             combo = 0
+            oops()
             continue
         stat[0] += 1
         if target["typed"] and last_hit and now - last_hit < 2:
@@ -1205,8 +1302,10 @@ def run_game(scr, ctx, wpm):
             target = None
             cleared += 1
             ease = min(1.0, ease + 0.03)
+            mascot.react(*(("dancing", 1.5) if combo % 5 == 0 and combo <= 20 else ("happy", 0.8)))
             if cleared >= level * CLEARS_PER_LEVEL:
                 level += 1
+                mascot.react("celebrating", 2.5)
                 banner, banner_ttl = f"Level {level} - {level_news(level, ctx)}", 2.5
                 if level % 5 == 0 and lives < GAME_LIVES:
                     lives += 1
@@ -1221,6 +1320,8 @@ def game_over(scr, res, best):
     """Game summary. Returns 'again' or 'menu'."""
     ok = C(GREEN) | curses.A_BOLD
     lines = [("Game over!" if not res["quit"] else "Game ended.", C(MIDDLE) | curses.A_BOLD), ("", 0)]
+    mood = ("hugging" if res["score"] > best["score"] else "shrug" if res["quit"]
+            else "table_flip")
     if res["score"] > best["score"]:
         lines += [("New high score!", ok), ("", 0)]
     lines += [(f"Score:     {res['score']:,}", curses.A_BOLD),
@@ -1237,7 +1338,7 @@ def game_over(scr, res, best):
         scr.erase()
         h, w = scr.getmaxyx()
         x0 = center_x(scr, 64)
-        put(scr, 1, x0, "Falling Words", curses.A_BOLD | C(MIDDLE))
+        put_titled(scr, 1, x0, "Falling Words", mood)
         for i, (text, attr) in enumerate(lines):
             put(scr, 3 + i, x0, text, attr)
         footer(scr, h - 2, x0, "Enter: play again    Esc: menu")
@@ -1571,7 +1672,7 @@ def main(scr):
             ("Quit", None),
         ]
         choice = menu(scr, "Typing Tutor", [(label, True) for label, _ in actions],
-                      summary_lines(prog), sel)
+                      summary_lines(prog), sel, greeting_face())
         if choice is None or actions[choice][1] is None:
             return
         sel = choice

@@ -37,6 +37,15 @@ Needs a terminal of at least 60x20.
   - Score = item length × level × combo multiplier (up to x4 for a streak without a mistake or
     miss). High score per layout; an extra life every 5 levels.
   Game keystrokes feed your key stats and mix-ups, but games are left out of WPM averages.
+
+## Mascot
+
+A little ASCII mascot keeps you company: it greets you on the main menu (sleepily, late at night),
+reacts on results screens, and lives on the ground in Falling Words, where it watches the item you're
+typing `(<_°)` `(°_>)`, cheers clears `(^_^)` and combos `♪(^_^)♪`, winces at mistakes `(>_<)`,
+cries when something lands `(T_T)`, naps while paused `(˘_˘)zzZ` and flips the table at game over
+`(╯°□°)╯`. Faces come from the reference sheet of
+[fp-bits/mascota-ascii](https://github.com/fp-bits/mascota-ascii) (MIT licence).
 - **Free typing**: random real sentences using the full keyboard.
 - **Type your own text**: point it at any plain-text file (Tab completes paths). Curly quotes, dashes and
   accents are simplified, and it works through the file ~300 characters at a time, remembering
