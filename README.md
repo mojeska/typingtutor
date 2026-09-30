@@ -3,6 +3,8 @@
 A terminal touch-typing tutor for QWERTY, Dvorak and Colemak keyboards, with an adaptive typing game,
 per-person profiles and a little ASCII mascot. Pure Python standard library (curses), no dependencies.
 
+**Website and install guide (Windows, macOS, Linux):** https://mojeska.github.io/typingtutor/
+
 ## Run
 
 ```

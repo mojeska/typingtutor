@@ -1,0 +1,464 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Typing Tutor</title>
+<meta name="description" content="A free, friendly touch-typing tutor that runs in your terminal. Lessons, an adaptive typing game and a little ASCII mascot. Windows, macOS and Linux.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='80'>⌨</text></svg>">
+<style>
+  :root {
+    --bg: #0c0f14; --panel: #12161d; --line: #2a313c;
+    --fg: #d7dde5; --dim: #8b95a3;
+    --green: #7ee787; --cyan: #56d4dd; --yellow: #e3b341;
+    --magenta: #d2a8ff; --blue: #79c0ff; --red: #ff7b72;
+    --mono: ui-monospace, "JetBrains Mono", "Cascadia Code", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f6f8fa; --panel: #ffffff; --line: #d0d7de;
+      --fg: #1f2328; --dim: #57606a;
+      --green: #1a7f37; --cyan: #0e7490; --yellow: #9a6700;
+      --magenta: #8250df; --blue: #0969da; --red: #cf222e;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.6 var(--mono);
+  }
+  main { max-width: 880px; margin: 0 auto; padding: 0 16px 48px; }
+  a { color: var(--cyan); }
+  a:focus-visible, button:focus-visible, .tryit:focus-within { outline: 2px solid var(--yellow); outline-offset: 2px; }
+  pre, code { font-family: var(--mono); }
+  pre { margin: 0; }
+
+  /* ---- hero ---- */
+  header.hero { padding: 48px 0 24px; }
+  .prompt { color: var(--dim); }
+  .cmd { color: var(--fg); }
+  .caret { display: inline-block; width: .6em; background: var(--fg); animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  h1 { font-size: clamp(28px, 7vw, 48px); line-height: 1.15; margin: 20px 0 8px; letter-spacing: -.5px; }
+  h1 .face { color: var(--green); font-size: .6em; vertical-align: middle; margin-left: .3em; white-space: nowrap; }
+  .tagline { color: var(--dim); margin: 0 0 20px; max-width: 60ch; }
+  .buttons { display: flex; flex-wrap: wrap; gap: 12px; }
+  .btn {
+    display: inline-block; padding: 8px 16px; border: 1px solid var(--line);
+    color: var(--fg); text-decoration: none; background: var(--panel);
+  }
+  .btn.primary { border-color: var(--green); color: var(--green); }
+  .btn:hover { border-color: var(--cyan); color: var(--cyan); }
+
+  /* ---- sections ---- */
+  section { margin-top: 40px; }
+  h2 { font-size: 18px; margin: 0 0 12px; color: var(--cyan); }
+  h2::before { content: "## "; color: var(--dim); }
+  .box {
+    border: 1px solid var(--line); background: var(--panel); padding: 16px;
+    overflow-x: auto;
+  }
+  p { margin: 0 0 12px; }
+  .dim { color: var(--dim); }
+
+  /* ---- keyboard (finger colours, like the app) ---- */
+  .kb { font-size: clamp(9px, 2.3vw, 15px); line-height: 1.5; white-space: pre; }
+  .k { transition: background .1s; }
+  .f-pinky { color: var(--magenta); } .f-ring { color: var(--blue); }
+  .f-middle { color: var(--cyan); } .f-index { color: var(--yellow); }
+  .k.next { background: var(--fg); color: var(--bg); }
+  .legend span { margin-right: 1em; }
+
+  /* ---- try it ---- */
+  .tryit { cursor: text; position: relative; }
+  .tryit input {
+    position: absolute; opacity: 0; width: 1px; height: 1px; left: 0; top: 0;
+    border: 0; padding: 0; font-size: 16px; /* 16px stops iOS zooming in */
+  }
+  .target { font-size: clamp(14px, 3.6vw, 18px); margin: 8px 0 12px; word-break: break-word; }
+  .target .ok { color: var(--green); } .target .bad { color: var(--red); }
+  .target .cur { background: var(--fg); color: var(--bg); }
+  .target .cur.miss { background: var(--red); }
+  .status { display: flex; flex-wrap: wrap; gap: 4px 20px; color: var(--dim); }
+  .status b { color: var(--fg); font-weight: normal; }
+  .mascot { color: var(--green); }
+  .mascot.sad { color: var(--red); }
+
+  /* ---- screenshot ---- */
+  .screen { font-size: clamp(8px, 1.9vw, 14px); line-height: 1.35; white-space: pre; }
+  .c-cyan { color: var(--cyan); } .c-green { color: var(--green); }
+  .c-yellow { color: var(--yellow); } .c-red { color: var(--red); }
+  .c-rev { background: var(--cyan); color: var(--bg); }
+  .c-hl { background: var(--fg); color: var(--bg); }
+  .caption { color: var(--dim); font-size: 13px; margin-top: 8px; }
+
+  /* ---- features ---- */
+  ul.features { list-style: none; padding: 0; margin: 0; display: grid; gap: 12px;
+                grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+  ul.features li { border: 1px solid var(--line); background: var(--panel); padding: 12px 14px; }
+  ul.features b { display: block; color: var(--yellow); font-weight: normal; }
+  ul.features b::before { content: "> "; color: var(--dim); }
+
+  /* ---- install tabs ---- */
+  .tabs { display: flex; gap: 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  .tabs button {
+    font: inherit; color: var(--dim); background: none; border: 1px solid transparent;
+    border-bottom: 0; padding: 8px 16px; cursor: pointer; margin-bottom: -1px;
+  }
+  .tabs button[aria-selected="true"] { color: var(--fg); border-color: var(--line); background: var(--panel); }
+  .panel { border: 1px solid var(--line); border-top: 0; background: var(--panel); padding: 16px; }
+  .panel h3 { font-size: 15px; margin: 0 0 12px; color: var(--yellow); font-weight: normal; }
+  ol.steps { margin: 0; padding-left: 1.6em; }
+  ol.steps li { margin-bottom: 16px; }
+  ol.steps li::marker { color: var(--dim); }
+  .code { display: flex; align-items: stretch; margin-top: 6px; border: 1px solid var(--line); background: var(--bg); }
+  .code pre { flex: 1; padding: 8px 12px; overflow-x: auto; color: var(--green); }
+  .code pre::before { content: "$ "; color: var(--dim); }
+  .code.ps pre::before { content: "> "; }
+  .copy {
+    font: inherit; font-size: 12px; color: var(--dim); background: none; border: 0;
+    border-left: 1px solid var(--line); padding: 0 12px; cursor: pointer; min-width: 64px;
+  }
+  .copy:hover { color: var(--cyan); }
+  .note { color: var(--dim); font-size: 13px; }
+  .note b { color: var(--fg); font-weight: normal; }
+
+  table.keys { border-collapse: collapse; width: 100%; }
+  table.keys td { padding: 4px 12px 4px 0; vertical-align: top; }
+  table.keys td:first-child { color: var(--cyan); white-space: nowrap; }
+
+  footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line); color: var(--dim); font-size: 13px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .caret { animation: none; }
+    .k { transition: none; }
+  }
+</style>
+</head>
+<body>
+<main>
+
+<header class="hero">
+  <div><span class="prompt">~ $ </span><span class="cmd" id="typed">python3 typing_tutor.py</span><span class="caret" aria-hidden="true">&nbsp;</span></div>
+  <h1>Typing Tutor<span class="face" id="heroFace" aria-hidden="true">(^_^)</span></h1>
+  <p class="tagline">A free, friendly touch-typing tutor that lives in your terminal. Learn to type without looking,
+    one pair of keys at a time, then put it to work in a typing game that adapts to you.</p>
+  <div class="buttons">
+    <a class="btn primary" href="#install">Install it</a>
+    <a class="btn" href="https://github.com/mojeska/typingtutor">View on GitHub</a>
+  </div>
+</header>
+
+<section aria-labelledby="try-h">
+  <h2 id="try-h">try it here</h2>
+  <div class="box tryit" id="tryit">
+    <label for="tryInput" class="dim" id="tryLabel">Click here and start typing. Watch the keyboard, not your hands.</label>
+    <input id="tryInput" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-describedby="tryLabel">
+    <div class="target" id="target" aria-live="off"></div>
+    <div class="kb" id="kb" aria-hidden="true"></div>
+    <div class="legend" aria-hidden="true">
+      <span class="f-pinky">pinky</span><span class="f-ring">ring</span><span class="f-middle">middle</span><span class="f-index">index</span><span>thumb</span>
+    </div>
+    <div class="status" aria-live="polite">
+      <span>next: <b id="next">f</b> <span id="finger">(left index)</span></span>
+      <span>wpm <b id="wpm">0</b></span>
+      <span>accuracy <b id="acc">100</b>%</span>
+      <span class="mascot" id="mascot" aria-label="mascot">(°_°)</span>
+    </div>
+  </div>
+</section>
+
+<section aria-labelledby="what-h">
+  <h2 id="what-h">what you get</h2>
+  <ul class="features">
+    <li><b>A real course</b>19 short lessons that start on the home row and add two keys at a time. Every exercise uses only keys you've already learned.</li>
+    <li><b>Never look down</b>An on-screen keyboard, coloured by finger, lights up the next key and tells you which finger to use.</li>
+    <li><b>Accuracy first</b>Mistakes must be fixed before you move on. Lessons unlock at 95% accuracy plus a gentle speed goal.</li>
+    <li><b>Falling Words game</b>Type letters and words before they hit the ground. It uses only your keys, starts at your pace, and speeds up as you level up.</li>
+    <li><b>Practice that targets you</b>Drills for your weakest keys and for key pairs you keep mixing up, plus 1, 2 and 5 minute timed tests.</li>
+    <li><b>Type anything</b>Point it at any text file (a book chapter, an article) and work through it. Your place is remembered.</li>
+    <li><b>QWERTY, Dvorak, Colemak</b>Each has its own course. Learn Dvorak or Colemak without changing your computer's settings.</li>
+    <li><b>Everyone gets a profile</b>Share one computer: each person has their own lessons, stats and high scores.</li>
+    <li><b>A tiny friend</b>An ASCII mascot cheers you on <span class="c-green">♪(^_^)♪</span>, winces at typos <span class="c-red">(&gt;_&lt;)</span> and naps when you pause <span class="c-cyan">(˘_˘)zzZ</span>.</li>
+  </ul>
+</section>
+
+<section aria-labelledby="game-h">
+  <h2 id="game-h">the game</h2>
+  <div class="box"><pre class="screen" role="img" aria-label="Screenshot of the Falling Words game: words falling toward the ground, the mascot standing on the ground, score and hearts at the top."><span class="c-cyan">Falling Words</span>      Score 1,240  Level 3  Combo x2  <span class="c-red">♥♥♥♥♡</span>
+┌──────────────────────────────────────────────────────┐<span class="c-yellow">x5</span>
+│          flag                                        │
+│                                        jazz          │
+│                                                      │
+├                                                      ┤<span class="c-yellow">x4</span>
+│                    <span class="c-green">+180 x4</span>                           │
+│                                                      │
+├                          <span class="c-green">st</span><span class="c-hl">r</span><span class="c-yellow">eet</span>                      ┤<span class="c-yellow">x3</span>
+│                                                      │
+│      Quiet                                           │
+├                                                      ┤<span class="c-yellow">x2</span>
+│                                              half;   │
+│                                                      │
+├                                                      ┤<span class="c-yellow">x1</span>
+│  <span class="c-red">desk</span>                                                │
+│                     <span class="c-rev"> (&lt;_°) </span>                          │
+└<span class="c-red">══════════════════════════════════════════════════════</span>┘
+          Next: r  -  left index</pre>
+  <p class="caption">Lock onto a word by typing its first letter. Clear it high up for up to 5&times; the points. The mascot watches the word you're typing.</p>
+  </div>
+</section>
+
+<section aria-labelledby="install-h" id="install">
+  <h2 id="install-h">install</h2>
+  <p>Typing Tutor is a single Python file with nothing else to install on macOS and Linux
+    (Windows needs one small extra package). You need <b>Python 3.10 or newer</b> and a terminal
+    window at least 60&times;20 characters.</p>
+
+  <div class="tabs" role="tablist" aria-label="Operating system">
+    <button role="tab" id="tab-windows" aria-controls="p-windows" aria-selected="true">Windows</button>
+    <button role="tab" id="tab-mac" aria-controls="p-mac" aria-selected="false">macOS</button>
+    <button role="tab" id="tab-linux" aria-controls="p-linux" aria-selected="false">Linux</button>
+  </div>
+
+  <div class="panel" role="tabpanel" id="p-windows" aria-labelledby="tab-windows">
+    <h3>Windows 10 / 11</h3>
+    <ol class="steps">
+      <li>Install Python from <a href="https://www.python.org/downloads/">python.org</a>.
+        In the installer, tick <b>"Add python.exe to PATH"</b>. Or, in a terminal:
+        <div class="code ps"><pre>winget install Python.Python.3.13</pre><button class="copy">copy</button></div></li>
+      <li>Open <b>Windows Terminal</b> (search for "Terminal" in the Start menu) and add curses support,
+        which Python on Windows doesn't include:
+        <div class="code ps"><pre>py -m pip install windows-curses</pre><button class="copy">copy</button></div></li>
+      <li>Download Typing Tutor:
+        <div class="code ps"><pre>curl.exe -o typing_tutor.py https://raw.githubusercontent.com/mojeska/typingtutor/main/typing_tutor.py</pre><button class="copy">copy</button></div></li>
+      <li>Start it:
+        <div class="code ps"><pre>py typing_tutor.py</pre><button class="copy">copy</button></div></li>
+    </ol>
+    <p class="note"><b>Tip:</b> use Windows Terminal rather than the old "Command Prompt" window, so the colours,
+      box lines and mascot faces all show up properly.</p>
+  </div>
+
+  <div class="panel" role="tabpanel" id="p-mac" aria-labelledby="tab-mac">
+    <h3>macOS</h3>
+    <ol class="steps">
+      <li>Open <b>Terminal</b> (Applications &rarr; Utilities) and check your Python:
+        <div class="code"><pre>python3 --version</pre><button class="copy">copy</button></div>
+        If it says 3.10 or higher, skip to step 3. The Python that comes with macOS is usually 3.9, which is too old.</li>
+      <li>Get a newer Python, either with <a href="https://brew.sh">Homebrew</a>:
+        <div class="code"><pre>brew install python</pre><button class="copy">copy</button></div>
+        or with the installer from <a href="https://www.python.org/downloads/macos/">python.org</a>.
+        Then open a new Terminal window.</li>
+      <li>Download Typing Tutor:
+        <div class="code"><pre>curl -O https://raw.githubusercontent.com/mojeska/typingtutor/main/typing_tutor.py</pre><button class="copy">copy</button></div></li>
+      <li>Start it:
+        <div class="code"><pre>python3 typing_tutor.py</pre><button class="copy">copy</button></div></li>
+    </ol>
+  </div>
+
+  <div class="panel" role="tabpanel" id="p-linux" aria-labelledby="tab-linux">
+    <h3>Linux</h3>
+    <ol class="steps">
+      <li>Python 3.10+ is already installed on almost every current distribution. To check:
+        <div class="code"><pre>python3 --version</pre><button class="copy">copy</button></div></li>
+      <li>Download Typing Tutor:
+        <div class="code"><pre>curl -O https://raw.githubusercontent.com/mojeska/typingtutor/main/typing_tutor.py</pre><button class="copy">copy</button></div></li>
+      <li>Start it:
+        <div class="code"><pre>python3 typing_tutor.py</pre><button class="copy">copy</button></div></li>
+      <li>Optional: make it a command you can run from anywhere as <code>typing-tutor</code>:
+        <div class="code"><pre>install -Dm755 typing_tutor.py ~/.local/bin/typing-tutor</pre><button class="copy">copy</button></div></li>
+    </ol>
+  </div>
+
+  <p class="note" style="margin-top:12px"><b>Prefer git?</b>
+    <code>git clone https://github.com/mojeska/typingtutor.git</code> works on all three.
+    To update later, just download the file again. Your progress is stored separately and is kept.</p>
+</section>
+
+<section aria-labelledby="use-h">
+  <h2 id="use-h">first steps</h2>
+  <div class="box">
+    <p>When it starts, type your name to make a profile, then pick <b>Continue: lesson 1</b>.
+      Rest your index fingers on the bumps on <b>F</b> and <b>J</b> and follow the highlighted keys.</p>
+    <table class="keys">
+      <tr><td>&uarr; &darr; or j k</td><td>move around menus</td></tr>
+      <tr><td>Enter</td><td>choose / start</td></tr>
+      <tr><td>Esc</td><td>go back (or pause the game)</td></tr>
+      <tr><td>--user NAME</td><td>start straight into your profile, e.g. <code>python3 typing_tutor.py --user Sam</code></td></tr>
+    </table>
+    <p class="note" style="margin:12px 0 0">Progress is saved automatically in your home folder under
+      <code>.local/share/typing-tutor</code>.</p>
+  </div>
+</section>
+
+<footer>
+  <p>Typing Tutor is free and open source under the <a href="https://github.com/mojeska/typingtutor/blob/main/LICENSE">MIT License</a>.
+    Mascot faces from <a href="https://github.com/fp-bits/mascota-ascii">fp-bits/mascota-ascii</a> (MIT).
+    <a href="https://github.com/mojeska/typingtutor/issues">Report a problem or suggest an idea</a>.</p>
+  <p class="mascot" aria-hidden="true">(ノ^_^)ノ happy typing!</p>
+</footer>
+
+</main>
+
+<script>
+(() => {
+  document.documentElement.classList.add("js");
+
+  // ---- hero: type out the command, cycle the mascot ----
+  const typed = document.getElementById("typed");
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (!reduce) {
+    const cmd = typed.textContent;
+    typed.textContent = "";
+    let i = 0;
+    const step = () => { typed.textContent = cmd.slice(0, ++i); if (i < cmd.length) setTimeout(step, 55 + Math.random() * 60); };
+    setTimeout(step, 400);
+    const faces = ["(^_^)", "(°_°)", "♪(^_^)♪", "(°_>)", "(ノ^_^)ノ", "(−_−)", "(◉_◉)"];
+    let f = 0;
+    setInterval(() => { document.getElementById("heroFace").textContent = faces[++f % faces.length]; }, 2200);
+  }
+
+  // ---- keyboard model (QWERTY), same finger colours as the app ----
+  const rows = [["`1234567890-=", 0], ["qwertyuiop[]", 6], ["asdfghjkl;'", 7], ["zxcvbnm,./", 9]];
+  const shifted = { "~": "`", "!": "1", "@": "2", "#": "3", "$": "4", "%": "5", "^": "6", "&": "7", "*": "8",
+                    "(": "9", ")": "0", "_": "-", "+": "=", "{": "[", "}": "]", ":": ";", '"': "'",
+                    "<": ",", ">": ".", "?": "/" };
+  const colFingers = ["left pinky", "left ring", "left middle", "left index", "left index",
+                      "right index", "right index", "right middle", "right ring"];
+  const finger = { " ": "either thumb" };
+  rows.forEach(([keys], r) => [...keys].forEach((k, c) => {
+    const col = Math.max(0, c - (r === 0 ? 1 : 0));
+    finger[k] = colFingers[col] || "right pinky";
+  }));
+  const baseKey = ch => /[A-Z]/.test(ch) ? [ch.toLowerCase(), true] : ch in shifted ? [shifted[ch], true] : [ch, false];
+
+  // Build the ASCII keyboard out of spans so single keys can light up.
+  const kb = document.getElementById("kb");
+  const keyEls = {};
+  const addKey = (line, label, id, cls) => {
+    const s = document.createElement("span");
+    s.className = "k " + cls;
+    s.textContent = label;
+    keyEls[id] = s;
+    line.appendChild(s);
+  };
+  rows.forEach(([keys, off], r) => {
+    const line = document.createElement("div");
+    if (r === 3) { addKey(line, "[shift]", "shift_l", "f-pinky"); line.append("  "); }
+    else line.append(" ".repeat(off));
+    [...keys].forEach(k => { addKey(line, `[${k}]`, k, "f-" + finger[k].split(" ")[1]); line.append(" "); });
+    if (r === 3) addKey(line, "[shift]", "shift_r", "f-pinky");
+    kb.appendChild(line);
+  });
+  const spaceLine = document.createElement("div");
+  spaceLine.append(" ".repeat(17));
+  addKey(spaceLine, "[" + "space".padStart(15).padEnd(26) + "]", " ", "");
+  kb.appendChild(spaceLine);
+
+  // ---- try it: type the sentences, just like a lesson ----
+  const texts = [
+    "the quick brown fox jumps over the lazy dog",
+    "keep your eyes on the screen and your fingers on the home row",
+    "accuracy comes first and speed will follow",
+    "sad lads ask dad for a glass of salad",
+  ];
+  let text, pos, errors, wrong, start, missed, t = 0;
+  const target = document.getElementById("target");
+  const input = document.getElementById("tryInput");
+  const mascot = document.getElementById("mascot");
+  let moodTimer;
+
+  function setMood(face, sad, ms) {
+    mascot.textContent = face;
+    mascot.classList.toggle("sad", !!sad);
+    clearTimeout(moodTimer);
+    if (ms) moodTimer = setTimeout(() => setMood("(°_°)"), ms);
+  }
+
+  function reset() {
+    text = texts[t++ % texts.length];
+    pos = errors = 0; wrong = new Set(); start = null; missed = false;
+    render();
+  }
+
+  function render() {
+    target.innerHTML = "";
+    [...text].forEach((c, i) => {
+      const s = document.createElement("span");
+      s.textContent = c === " " && wrong.has(i) && i < pos ? "·" : c;
+      if (i < pos) s.className = wrong.has(i) ? "bad" : "ok";
+      else if (i === pos) s.className = "cur" + (missed ? " miss" : "");
+      target.appendChild(s);
+    });
+    Object.values(keyEls).forEach(el => el.classList.remove("next"));
+    const want = text[pos];
+    const [base, shift] = baseKey(want);
+    keyEls[base]?.classList.add("next");
+    if (shift) keyEls[finger[base]?.startsWith("left") ? "shift_r" : "shift_l"]?.classList.add("next");
+    document.getElementById("next").textContent = want === " " ? "space" : want;
+    document.getElementById("finger").textContent = `(${finger[base] || "?"})`;
+    const secs = start ? (Date.now() - start) / 1000 : 0;
+    document.getElementById("wpm").textContent = secs > 1 ? Math.round(pos / 5 / (secs / 60)) : 0;
+    document.getElementById("acc").textContent = pos + errors ? Math.round(100 * pos / (pos + errors)) : 100;
+  }
+
+  function type(ch) {
+    if (!start) start = Date.now();
+    if (ch === text[pos]) {
+      pos++; missed = false;
+      if (pos === text.length) {
+        setMood("(ノ^_^)ノ", false, 1800);
+        render();
+        setTimeout(reset, 900);
+        return;
+      }
+      if (text[pos - 1] === " ") setMood("(^_^)", false, 500);
+    } else {
+      errors++; wrong.add(pos); missed = true;
+      setMood("(>_<)", true, 700);
+    }
+    render();
+  }
+
+  // A hidden input receives the keys, so phone keyboards work too.
+  document.getElementById("tryit").addEventListener("click", () => input.focus());
+  input.addEventListener("input", () => {
+    for (const ch of input.value) type(ch);
+    input.value = "";
+  });
+  input.addEventListener("focus", () => { if (mascot.textContent === "(˘_˘)zzZ") setMood("(°_°)"); });
+  input.addEventListener("blur", () => setMood("(˘_˘)zzZ"));
+  reset();
+  setMood("(˘_˘)zzZ");
+
+  // ---- install tabs: pick the visitor's OS ----
+  const tabs = [...document.querySelectorAll('[role="tab"]')];
+  function select(tab) {
+    tabs.forEach(t => {
+      const on = t === tab;
+      t.setAttribute("aria-selected", on);
+      t.tabIndex = on ? 0 : -1;
+      document.getElementById(t.getAttribute("aria-controls")).hidden = !on;
+    });
+  }
+  tabs.forEach((tab, i) => {
+    tab.addEventListener("click", () => select(tab));
+    tab.addEventListener("keydown", e => {
+      const d = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
+      if (d) { const n = tabs[(i + d + tabs.length) % tabs.length]; select(n); n.focus(); }
+    });
+  });
+  const ua = navigator.userAgent;
+  select(document.getElementById(/Mac|iPhone|iPad/.test(ua) ? "tab-mac" : /Linux|X11|Android/.test(ua) ? "tab-linux" : "tab-windows"));
+
+  // ---- copy buttons ----
+  document.querySelectorAll(".copy").forEach(btn => btn.addEventListener("click", async () => {
+    const cmd = btn.previousElementSibling.textContent;
+    try { await navigator.clipboard.writeText(cmd); btn.textContent = "copied"; }
+    catch { btn.textContent = "select"; getSelection().selectAllChildren(btn.previousElementSibling); }
+    setTimeout(() => (btn.textContent = "copy"), 1500);
+  }));
+})();
+</script>
+</body>
+</html>
