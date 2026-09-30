@@ -88,4 +88,4 @@ restore it.
 
 [MIT](LICENSE) © 2026 Jeff Rainey. The mascot faces come from
 [fp-bits/mascota-ascii](https://github.com/fp-bits/mascota-ascii) (MIT, © 2024 fp-bits); its notice
-is included in [LICENSE](LICENSE).
+is in [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES).
