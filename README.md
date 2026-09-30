@@ -28,6 +28,15 @@ Needs a terminal of at least 60x20.
   containing both keys. Forgotten Shifts and space slips are ignored.
 - **Timed tests** of 1, 2 or 5 minutes, with a personal best for each. Uses real sentences once
   you've finished the course, otherwise only the keys you've learned.
+- **Falling Words game**: type items before they hit the ground; five misses ends the game.
+  Type an item's first key to lock onto it (Backspace lets go). It adapts to you:
+  - only keys you've been taught fall, and your weak keys turn up more often;
+  - the starting pace comes from your recent WPM;
+  - every 10 items cleared is a new level: faster, busier, and it adds words (once you know
+    enough letters), then capitals, numbers and punctuation (once the course has taught them).
+  - Score = item length × level × combo multiplier (up to x4 for a streak without a mistake or
+    miss). High score per layout; an extra life every 5 levels.
+  Game keystrokes feed your key stats and mix-ups, but games are left out of WPM averages.
 - **Free typing**: random real sentences using the full keyboard.
 - **Type your own text**: point it at any plain-text file (Tab completes paths). Curly quotes, dashes and
   accents are simplified, and it works through the file ~300 characters at a time, remembering
@@ -47,5 +56,5 @@ your keystrokes, so you can learn a new layout without changing any system setti
 - WPM uses the standard (characters / 5) per minute.
 - Everything is saved to `~/.local/share/typing-tutor/progress.json` (progress files from older
   versions are migrated automatically into the QWERTY course).
-- **Statistics** shows a WPM trend, timed-test bests, common mix-ups, a per-key accuracy heatmap,
+- **Statistics** shows a WPM trend, timed-test bests, game high score, common mix-ups, a per-key accuracy heatmap,
   your least accurate keys and your practice streak.

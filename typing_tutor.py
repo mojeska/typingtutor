@@ -413,11 +413,15 @@ def lay(prog):
     d.setdefault("lessons", {})
     d.setdefault("keys", {})
     d.setdefault("confusions", {})
+    d.setdefault("game_best", {"score": 0, "level": 0})
     return d
 
 
-def layout_sessions(prog):
-    return [s for s in prog["sessions"] if s.get("layout", "qwerty") == prog["layout"]]
+def layout_sessions(prog, games=False):
+    """This layout's sessions. Games are left out unless asked for: their WPM includes
+    time spent waiting for things to fall, so it would drag the averages down."""
+    return [s for s in prog["sessions"] if s.get("layout", "qwerty") == prog["layout"]
+            and (games or s["mode"] != "game")]
 
 
 def save_progress(prog):
@@ -974,6 +978,301 @@ def play_test(scr, prog):
             return
 
 
+GAME_LIVES = 5
+CLEARS_PER_LEVEL = 10
+
+
+def game_context(prog):
+    """What the falling-words game may drop, from the user's course progress."""
+    chars, caps = taught(prog)
+    letters = sorted(c for c in chars if c.isalpha())
+    return dict(chars=chars, letters=letters, caps=caps,
+                digits=sorted(c for c in chars if c.isdigit()),
+                symbols=sorted(c for c in chars if not c.isalnum() and c != " "),
+                pool=[w for w in WORDS if set(w) <= set(letters)],
+                weak=[k for k in weak_keys(prog, chars, n=4) if k != " "])
+
+
+def game_item(level, ctx):
+    """Something to drop. Single keys at first; words, capitals, numbers and
+    punctuation join in as the level rises (if the course has taught them)."""
+    def key():
+        if ctx["weak"] and random.random() < 0.3:
+            return random.choice(ctx["weak"])
+        return random.choice(ctx["letters"])
+
+    pool = ctx["pool"]
+    if len(pool) >= 8 and random.random() < min(0.85, 0.25 * (level - 1)):
+        item = random.choice([w for w in pool if len(w) <= 2 + level] or pool)
+        if ctx["caps"] and level >= 3 and random.random() < 0.25:
+            item = item.capitalize()
+        if ctx["symbols"] and level >= 4 and random.random() < 0.3:
+            item = attach(item, random.choice(ctx["symbols"]), pool)
+        return item
+    if level >= 3 and random.random() < 0.25:
+        if ctx["digits"] and (not ctx["symbols"] or random.random() < 0.5):
+            return "".join(random.choice(ctx["digits"])
+                           for _ in range(random.randint(1, min(4, level - 1))))
+        if ctx["symbols"]:
+            return random.choice(ctx["symbols"])
+    n = 1 if level < 2 or random.random() < 0.5 else random.randint(2, min(4, level))
+    item = "".join(key() for _ in range(n))
+    if ctx["caps"] and level >= 3 and random.random() < 0.2:
+        item = item.capitalize()
+    return item
+
+
+def level_news(level, ctx):
+    if level == 2 and len(ctx["pool"]) >= 8:
+        return "Words incoming!"
+    if level == 3:
+        extra = [name for name, on in (("capitals", ctx["caps"]), ("numbers", ctx["digits"]),
+                                       ("symbols", ctx["symbols"])) if on]
+        if extra:
+            return f"{', '.join(extra).capitalize()} join in!"
+    if level == 4 and ctx["symbols"] and len(ctx["pool"]) >= 8:
+        return "Punctuated words!"
+    return "Faster!"
+
+
+def type_secs(n, wpm):
+    """Rough time to spot and type an n-character item."""
+    return 1.2 + n * 12 / wpm
+
+
+def run_game(scr, ctx, wpm):
+    """Falling-words game loop. Returns a result dict (same shape as run_exercise
+    plus score/level/cleared)."""
+    scr.timeout(30)
+    items, popups = [], []  # items: dict(text, x, y 0..1, speed, typed)
+    target = None
+    score = combo = cleared = correct = errors = 0
+    level, lives = 1, GAME_LIVES
+    keys, confusions = {}, {}
+    banner, banner_ttl, flash = "Level 1 - go!", 2.0, 0.0
+    spawn_in, play_time, last_hit = 0.8, 0.0, None
+    paused = quit_game = False
+    last = time.monotonic()
+    while lives > 0 and not quit_game:
+        h, w = scr.getmaxyx()
+        small = h < 20 or w < 60
+        fw = min(70, w - 4)
+        rows = h - 5
+        fx = center_x(scr, fw)
+        now = time.monotonic()
+        dt, last = min(0.1, now - last), now
+        mult = 1 + min(combo // 5, 3)
+
+        if not (paused or small):
+            play_time += dt
+            spawn_in -= dt
+            if spawn_in <= 0 and len(items) < 4 + level:
+                text = game_item(level, ctx)
+                for _ in range(10):  # avoid overlapping items near the top
+                    x = random.randint(1, max(1, fw - len(text) - 2))
+                    if not any(it["y"] < 3 / rows and x - 2 < it["x"] + len(it["text"])
+                               and it["x"] - 2 < x + len(text) for it in items):
+                        break
+                slack = max(1.4, 4.0 * 0.88 ** (level - 1))
+                items.append(dict(text=text, x=x, y=0.0, typed=0,
+                                  speed=1 / (type_secs(len(text), wpm) * slack)))
+                spawn_in = type_secs(len(text), wpm) * max(0.9, 2.5 * 0.9 ** (level - 1))
+            for it in items[:]:
+                it["y"] += it["speed"] * dt
+                if it["y"] >= 1:
+                    items.remove(it)
+                    lives -= 1
+                    combo = 0
+                    flash = 0.5
+                    if it is target:
+                        target = None
+            for p in popups[:]:
+                p[3] -= dt
+                if p[3] <= 0:
+                    popups.remove(p)
+            banner_ttl -= dt
+            flash -= dt
+
+        # --- draw ---
+        scr.erase()
+        if small:
+            put(scr, 0, 0, "Please enlarge the terminal to at least 60x20.")
+        else:
+            put(scr, 0, fx, "Falling Words", curses.A_BOLD | C(MIDDLE))
+            status = f"Score {score:,}   Level {level}   Combo x{mult}   "
+            hearts = "♥" * lives + "♡" * (GAME_LIVES - lives)
+            sx = fx + fw - len(status) - len(hearts)
+            put(scr, 0, sx, status, curses.A_BOLD)
+            put(scr, 0, sx + len(status), hearts, C(RED) | curses.A_BOLD)
+            put(scr, 1, fx, "┌" + "─" * (fw - 2) + "┐")
+            for r in range(rows):
+                put(scr, 2 + r, fx, "│")
+                put(scr, 2 + r, fx + fw - 1, "│")
+            ground = C(ERRBG) if flash > 0 else C(RED) | curses.A_BOLD
+            put(scr, 2 + rows, fx, "└" + "═" * (fw - 2) + "┘", ground)
+            for it in items:
+                y = 2 + min(rows - 1, int(it["y"] * rows))
+                x = fx + 1 + it["x"]
+                t = it["text"]
+                if it is target:
+                    put(scr, y, x, t[:it["typed"]], C(GREEN) | curses.A_BOLD)
+                    put(scr, y, x + it["typed"], t[it["typed"]], curses.A_REVERSE | curses.A_BOLD)
+                    put(scr, y, x + it["typed"] + 1, t[it["typed"] + 1:], C(INDEX) | curses.A_BOLD)
+                else:
+                    put(scr, y, x, t, (C(RED) if it["y"] > 0.75 else 0) | curses.A_BOLD)
+            for py, px, ptext, _ in popups:
+                put(scr, py, px, ptext, C(GREEN) | curses.A_BOLD)
+            if banner_ttl > 0:
+                put(scr, 2 + rows // 3, fx + (fw - len(banner)) // 2, banner,
+                    C(MIDDLE) | curses.A_BOLD)
+            if target:
+                want = target["text"][target["typed"]]
+                base, shifted = base_key(want)
+                hint = f"Next: {want}  -  {FINGERS.get(base, '?')}"
+                if shifted:
+                    hint += f" + {'right' if shift_side(base) == 'shift_r' else 'left'} pinky on Shift"
+            else:
+                hint = "Type the first key of any falling item to lock on"
+            put(scr, 3 + rows, center_x(scr, len(hint)), hint, curses.A_BOLD)
+            if paused:
+                msg = "  PAUSED  "
+                put(scr, 2 + rows // 2, fx + (fw - len(msg)) // 2, msg,
+                    curses.A_REVERSE | curses.A_BOLD)
+                footer(scr, h - 1, 2, "Esc/Enter: resume   q: end game")
+            else:
+                footer(scr, h - 1, 2, "Esc: pause   Backspace: let go of a word")
+        scr.refresh()
+
+        # --- input ---
+        try:
+            ch = scr.get_wch()
+        except curses.error:
+            continue
+        if paused:
+            if ch in ("\x1b", "\n", "\r", curses.KEY_ENTER):
+                paused = False
+            elif ch == "q":
+                quit_game = True
+            continue
+        if ch == "\x1b":
+            paused = True
+            continue
+        if small:
+            continue
+        if ch in (curses.KEY_BACKSPACE, "\x7f", "\b"):
+            if target:
+                target["typed"] = 0
+                target = None
+            continue
+        if not isinstance(ch, str) or not ch.isprintable() or ch == " ":
+            continue
+        ch = REMAP.get(ch, ch)
+        now = time.monotonic()
+        if target is None:
+            cands = [it for it in items if it["text"][0] == ch]
+            if not cands:
+                errors += 1
+                combo = 0
+                continue
+            target = max(cands, key=lambda it: it["y"])  # the most urgent one
+        want = target["text"][target["typed"]]
+        stat = keys.setdefault(want, [0, 0, 0.0, 0])
+        if ch != want:
+            stat[1] += 1
+            confusions[want + ch] = confusions.get(want + ch, 0) + 1
+            errors += 1
+            combo = 0
+            continue
+        stat[0] += 1
+        if target["typed"] and last_hit and now - last_hit < 2:
+            stat[2] += now - last_hit
+            stat[3] += 1
+        last_hit = now
+        correct += 1
+        target["typed"] += 1
+        if target["typed"] == len(target["text"]):
+            combo += 1
+            mult = 1 + min(combo // 5, 3)
+            points = 10 * len(target["text"]) * level * mult
+            score += points
+            y = 2 + min(rows - 1, int(target["y"] * rows))
+            popups.append([y, fx + 1 + target["x"], f"+{points}", 0.8])
+            items.remove(target)
+            target = None
+            cleared += 1
+            if cleared >= level * CLEARS_PER_LEVEL:
+                level += 1
+                banner, banner_ttl = f"Level {level} - {level_news(level, ctx)}", 2.5
+                if level % 5 == 0 and lives < GAME_LIVES:
+                    lives += 1
+                    banner += "  +1 life"
+    secs = max(play_time, 1.0)
+    return dict(score=score, level=level, cleared=cleared, quit=quit_game,
+                wpm=correct / 5 / (secs / 60), accuracy=100 * correct / max(1, correct + errors),
+                seconds=secs, chars=correct, errors=errors, keys=keys, confusions=confusions)
+
+
+def game_over(scr, res, best):
+    """Game summary. Returns 'again' or 'menu'."""
+    ok = C(GREEN) | curses.A_BOLD
+    lines = [("Game over!" if not res["quit"] else "Game ended.", C(MIDDLE) | curses.A_BOLD), ("", 0)]
+    if res["score"] > best["score"]:
+        lines += [("New high score!", ok), ("", 0)]
+    lines += [(f"Score:     {res['score']:,}", curses.A_BOLD),
+              (f"Level:     {res['level']}", 0),
+              (f"Cleared:   {res['cleared']} items", 0),
+              (f"Accuracy:  {res['accuracy']:5.1f}%", 0),
+              (f"High score: {max(best['score'], res['score']):,}", 0)]
+    trouble = sorted(((s[1], k) for k, s in res["keys"].items() if s[1]), reverse=True)[:5]
+    if trouble:
+        lines += [("", 0), ("Trouble keys: " + ", ".join(f"{k} ({n})" for n, k in trouble), 0)]
+    time.sleep(0.5)  # swallow keys typed as the last item hit the ground
+    curses.flushinp()
+    while True:
+        scr.erase()
+        h, w = scr.getmaxyx()
+        x0 = center_x(scr, 64)
+        put(scr, 1, x0, "Falling Words", curses.A_BOLD | C(MIDDLE))
+        for i, (text, attr) in enumerate(lines):
+            put(scr, 3 + i, x0, text, attr)
+        footer(scr, h - 2, x0, "Enter: play again    Esc: menu")
+        scr.refresh()
+        ch = wait_key(scr)
+        if ch in ("\n", "\r", curses.KEY_ENTER):
+            return "again"
+        if ch in ("\x1b", "q"):
+            return "menu"
+
+
+def play_game(scr, prog):
+    while True:
+        ctx = game_context(prog)
+        recent = layout_sessions(prog)[-10:]
+        wpm = min(120.0, max(8.0, sum(s["wpm"] for s in recent) / len(recent))) if recent else 12.0
+        best = dict(lay(prog)["game_best"])
+        joins = [name for name, on in (("words", len(ctx["pool"]) >= 8), ("capitals", ctx["caps"]),
+                                       ("numbers", ctx["digits"]), ("punctuation", ctx["symbols"]))
+                 if on]
+        info = ["Type each item before it hits the ground. Five misses and it's over.",
+                "Type an item's first key to lock onto it; Backspace lets go.",
+                "",
+                f"Tuned to you: only keys you've learned, starting pace from your {wpm:.0f} WPM.",
+                ("Levels bring " + ", ".join(joins) + " and more speed." if joins
+                 else "Each level falls faster - learn more keys to unlock words."),
+                "Your weak keys (highlighted) turn up more often." if ctx["weak"] else "",
+                f"High score: {best['score']:,} (level {best['level']})" if best["score"] else ""]
+        if not intro(scr, "Falling Words", info, "".join(sorted(ctx["chars"] - {" "})),
+                     {base_key(k)[0] for k in ctx["weak"]}):
+            return
+        res = run_game(scr, ctx, wpm)
+        if res["chars"] + res["errors"]:
+            if res["score"] > best["score"]:
+                lay(prog)["game_best"] = {"score": res["score"], "level": res["level"]}
+            record(prog, "game", None, res, score=res["score"], level=res["level"])
+        if game_over(scr, res, best) == "menu":
+            return
+
+
 def play_free(scr, prog):
     while True:
         text = sentence_text()
@@ -1206,6 +1505,9 @@ def stats_screen(scr, prog):
              if any(s["mode"] == "test" and s.get("limit") == m for s in sessions)]
     if tests:
         lines.append("Timed-test bests (WPM): " + "   ".join(tests))
+    if lay(prog)["game_best"]["score"]:
+        gb = lay(prog)["game_best"]
+        lines.append(f"Falling-words high score: {gb['score']:,} (level {gb['level']})")
     mixups = sorted(lay(prog)["confusions"].items(), key=lambda kv: -kv[1])[:5]
     if mixups:
         lines.append("Common mix-ups (meant>typed): " + "  ".join(
@@ -1256,6 +1558,7 @@ def main(scr):
             ("Practise weak keys", lambda: play_weak(scr, prog)),
             ("Drill mixed-up key pairs", lambda: play_confusions(scr, prog)),
             ("Timed test (1, 2 or 5 minutes)", lambda: play_test(scr, prog)),
+            ("Falling words game", lambda: play_game(scr, prog)),
             ("Free typing (full keyboard)", lambda: play_free(scr, prog)),
             ("Type your own text", lambda: play_custom(scr, prog)),
             ("Statistics", lambda: stats_screen(scr, prog)),
