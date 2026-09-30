@@ -19,7 +19,8 @@ Teaching approach (the classic touch-typing method used by most courses):
     letting the tutor translate keys.
 
 WPM uses the standard definition: (characters typed / 5) per minute.
-Progress is saved to $XDG_DATA_HOME/typing-tutor/progress.json.
+Each person has a profile; progress is saved to
+$XDG_DATA_HOME/typing-tutor/profiles/<name>.json.
 """
 import argparse
 import curses
@@ -34,8 +35,11 @@ import unicodedata
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-DATA_FILE = (Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
-             / "typing-tutor" / "progress.json")
+DATA_DIR = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share") / "typing-tutor"
+PROFILES_DIR = DATA_DIR / "profiles"
+LEGACY_FILE = DATA_DIR / "progress.json"  # single-user progress from before profiles
+SETTINGS_FILE = DATA_DIR / "settings.json"
+DATA_FILE = LEGACY_FILE  # the active profile's file, set by open_profile()
 PASS_ACCURACY = 95.0
 EXERCISE_TOKENS = 30
 
@@ -429,6 +433,47 @@ def save_progress(prog):
     tmp = DATA_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(prog, indent=1))
     tmp.replace(DATA_FILE)
+
+
+def slugify(name):
+    """File-name-safe version of a profile name (case-insensitive)."""
+    s = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode().lower()
+    return re.sub(r"[^a-z0-9]+", "-", s).strip("-") or name.encode().hex()[:40]
+
+
+def profile_path(name):
+    return PROFILES_DIR / f"{slugify(name)}.json"
+
+
+def list_profiles():
+    """[(path, progress)] for every saved profile, by name."""
+    out = []
+    for f in PROFILES_DIR.glob("*.json"):
+        try:
+            out.append((f, json.loads(f.read_text())))
+        except (OSError, json.JSONDecodeError):
+            continue
+    return sorted(out, key=lambda p: p[1].get("name", p[0].stem).lower())
+
+
+def load_settings():
+    try:
+        return json.loads(SETTINGS_FILE.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def open_profile(path, name):
+    """Make `path` the active profile (creating it if new) and return its progress."""
+    global DATA_FILE
+    DATA_FILE = path
+    prog = load_progress()
+    prog.setdefault("name", name)
+    save_progress(prog)
+    settings = load_settings()
+    settings["last_profile"] = path.stem
+    SETTINGS_FILE.write_text(json.dumps(settings))
+    return prog
 
 
 def record(prog, mode, lesson_idx, res, **extra):
@@ -1053,6 +1098,7 @@ def play_test(scr, prog):
 
 GAME_LIVES = 5
 CLEARS_PER_LEVEL = 10
+GAME_ZONES = 5  # the field is split top to bottom; clearing an item in the top zone scores x5
 
 
 def game_context(prog):
@@ -1142,6 +1188,8 @@ def run_game(scr, ctx, wpm):
             play_time += dt
             mascot.tick(dt)
             spawn_in -= dt
+            if not items:
+                spawn_in = min(spawn_in, 0.4)  # never leave the player waiting on an empty field
             if spawn_in <= 0 and len(items) < 4 + level:
                 text = game_item(level, ctx)
                 for _ in range(10):  # avoid overlapping items near the top
@@ -1152,7 +1200,7 @@ def run_game(scr, ctx, wpm):
                 slack = max(1.4, 5.0 * 0.88 ** (level - 1))
                 items.append(dict(text=text, x=x, y=0.0, typed=0,
                                   speed=ease / (type_secs(len(text), wpm) * slack)))
-                spawn_in = type_secs(len(text), wpm) * max(0.9, 3.0 * 0.9 ** (level - 1)) / ease
+                spawn_in = type_secs(len(text), wpm) * max(0.7, 1.8 * 0.9 ** (level - 1)) / ease
             for it in items[:]:
                 it["y"] += it["speed"] * dt
                 if it["y"] >= 1:
@@ -1186,6 +1234,12 @@ def run_game(scr, ctx, wpm):
             for r in range(rows):
                 put(scr, 2 + r, fx, "│")
                 put(scr, 2 + r, fx + fw - 1, "│")
+            for z in range(GAME_ZONES):
+                r = 2 + z * rows // GAME_ZONES
+                if z:
+                    put(scr, r, fx, "├")
+                    put(scr, r, fx + fw - 1, "┤")
+                put(scr, r, fx + fw, f"x{GAME_ZONES - z}", C(INDEX) | curses.A_BOLD)
             ground = C(ERRBG) if flash > 0 else C(RED) | curses.A_BOLD
             put(scr, 2 + rows, fx, "└" + "═" * (fw - 2) + "┘", ground)
             for it in items:
@@ -1218,7 +1272,8 @@ def run_game(scr, ctx, wpm):
             else:
                 idle = "normal"
             mood = "sleeping" if paused else mascot.face(idle)
-            put(scr, 1 + rows, mx - text_width(FACES[mood]) // 2, FACES[mood], face_attr(mood))
+            badge = f" {FACES[mood]} "
+            put(scr, 1 + rows, mx - text_width(badge) // 2, badge, face_attr(mood) | curses.A_REVERSE)
             if target:
                 want = target["text"][target["typed"]]
                 base, shifted = base_key(want)
@@ -1294,10 +1349,14 @@ def run_game(scr, ctx, wpm):
         if target["typed"] == len(target["text"]):
             combo += 1
             mult = 1 + min(combo // 5, 3)
-            points = 10 * len(target["text"]) * level * mult
+            row = min(rows - 1, int(target["y"] * rows))
+            # Score by the zone the item is drawn in, matching the marks on the walls.
+            zone = GAME_ZONES - max(z for z in range(GAME_ZONES) if z * rows // GAME_ZONES <= row)
+            points = 10 * len(target["text"]) * level * mult * zone
             score += points
-            y = 2 + min(rows - 1, int(target["y"] * rows))
-            popups.append([y, fx + 1 + target["x"], f"+{points}", 0.8])
+            y = 2 + row
+            popups.append([y, fx + 1 + target["x"], f"+{points}" + (f" x{zone}" if zone > 1 else ""),
+                           0.8])
             items.remove(target)
             target = None
             cleared += 1
@@ -1361,7 +1420,7 @@ def play_game(scr, prog):
                  if on]
         info = ["Type each item before it hits the ground. Five misses and it's over.",
                 "Type an item's first key to lock onto it; Backspace lets go.",
-                "",
+                "The higher up you clear it, the more it's worth: x5 at the top down to x1.",
                 f"Tuned to you: only keys you've learned, starting pace from your {wpm:.0f} WPM.",
                 ("Levels bring " + ", ".join(joins) + " and more speed." if joins
                  else "Each level falls faster - learn more keys to unlock words."),
@@ -1395,8 +1454,9 @@ def play_free(scr, prog):
             return
 
 
-def prompt(scr, title, lines, default=""):
-    """Single-line text input with Tab filename completion. Returns str or None."""
+def prompt(scr, title, lines, default="", complete=True):
+    """Single-line text input, with Tab filename completion if `complete`.
+    Returns str or None."""
     buf, matches = default, []
     scr.timeout(-1)
     try:
@@ -1413,7 +1473,8 @@ def prompt(scr, title, lines, default=""):
             y = 4 + len(lines)
             for i, m in enumerate(matches[:h - y - 4]):
                 put(scr, y + 2 + i, 6, m, curses.A_DIM)
-            footer(scr, h - 1, 2, "Enter: OK   Tab: complete   Ctrl-U: clear   Esc: back")
+            footer(scr, h - 1, 2, "Enter: OK   Tab: complete   Ctrl-U: clear   Esc: back" if complete
+                   else "Enter: OK   Ctrl-U: clear   Esc: back")
             shown = buf[-(w - 8):]
             put(scr, y, 4, "> " + shown)
             scr.move(y, min(w - 1, 6 + len(shown)))
@@ -1428,7 +1489,7 @@ def prompt(scr, title, lines, default=""):
                 buf = buf[:-1]
             elif ch == "\x15":
                 buf = ""
-            elif ch == "\t":
+            elif ch == "\t" and complete:
                 found = sorted(glob.glob(os.path.expanduser(buf) + "*"))
                 if found:
                     common = os.path.commonprefix(found)
@@ -1646,13 +1707,67 @@ def stats_screen(scr, prog):
     wait_key(scr)
 
 
-def main(scr):
-    try:
-        curses.curs_set(0)
-    except curses.error:
-        pass
-    init_colors()
-    prog = load_progress()
+def friendly_day(iso):
+    days = (date.today() - date.fromisoformat(iso[:10])).days
+    return "today" if days == 0 else "yesterday" if days == 1 else f"{days} days ago"
+
+
+def profile_label(prog):
+    lk = prog.get("layout") if prog.get("layout") in LAYOUTS else "qwerty"
+    passed = sum(1 for r in prog.get("layouts", {}).get(lk, {}).get("lessons", {}).values()
+                 if r.get("passed"))
+    sessions = prog.get("sessions", [])
+    last = f"last practised {friendly_day(sessions[-1]['date'])}" if sessions else "new"
+    return f"{prog.get('name', '?'):<18} {LAYOUTS[lk]['name']:<8} {passed:2}/{len(LESSONS)} lessons   {last}"
+
+
+def ask_name(scr, lines):
+    while True:
+        name = prompt(scr, "Typing Tutor", lines + ["", "What's your name?"], complete=False)
+        if name is None:
+            return None
+        if name:
+            return name[:30]
+
+
+def choose_profile(scr):
+    """'Who's typing?' Returns the chosen profile's progress, or None to quit."""
+    while True:
+        profiles = list_profiles()
+        if not profiles:
+            if LEGACY_FILE.exists():
+                name = ask_name(scr, [
+                    "Typing Tutor now has profiles, so several people can share it: each person",
+                    "gets their own lessons, statistics and game scores.",
+                    "Your progress so far will be kept under your name."])
+                if name is None:
+                    return None
+                PROFILES_DIR.mkdir(parents=True, exist_ok=True)
+                LEGACY_FILE.replace(profile_path(name))
+            else:
+                name = ask_name(scr, ["Welcome! Everyone who uses this gets their own profile,",
+                                      "with their own lessons, statistics and game scores."])
+                if name is None:
+                    return None
+            return open_profile(profile_path(name), name)
+        last = load_settings().get("last_profile")
+        items = [(profile_label(p), True) for _, p in profiles] + [("+ New profile", True)]
+        sel = next((i for i, (f, _) in enumerate(profiles) if f.stem == last), 0)
+        i = menu(scr, "Who's typing?", items, ["Pick your name, or add a new profile."], sel,
+                 greeting_face())
+        if i is None:
+            return None
+        if i < len(profiles):
+            path, p = profiles[i]
+            return open_profile(path, p.get("name", path.stem))
+        name = ask_name(scr, ["New profile: lessons, statistics and scores start fresh.",
+                              "(If the name already exists, you'll just switch to it.)"])
+        if name is not None:
+            return open_profile(profile_path(name), name)
+
+
+def main_menu(scr, prog):
+    """Returns True to switch user, False to quit."""
     set_layout(prog["layout"], prog["remap"])
     sel = 0
     while True:
@@ -1669,24 +1784,47 @@ def main(scr):
             ("Type your own text", lambda: play_custom(scr, prog)),
             ("Statistics", lambda: stats_screen(scr, prog)),
             (f"Keyboard layout: {layout_label(prog)}", lambda: choose_layout(scr, prog)),
+            (f"Switch user (you're {prog['name']})", "switch"),
             ("Quit", None),
         ]
-        choice = menu(scr, "Typing Tutor", [(label, True) for label, _ in actions],
+        choice = menu(scr, f"Typing Tutor - {prog['name']}", [(label, True) for label, _ in actions],
                       summary_lines(prog), sel, greeting_face())
         if choice is None or actions[choice][1] is None:
-            return
+            return False
+        if actions[choice][1] == "switch":
+            return True
         sel = choice
         actions[choice][1]()
 
 
+def main(scr, user=None):
+    try:
+        curses.curs_set(0)
+    except curses.error:
+        pass
+    init_colors()
+    while True:
+        prog = open_profile(profile_path(user), user) if user else choose_profile(scr)
+        user = None
+        if prog is None or not main_menu(scr, prog):
+            return
+
+
 def cli():
-    ap = argparse.ArgumentParser(description="Terminal touch-typing tutor (QWERTY).")
-    ap.add_argument("--reset", action="store_true", help="erase all saved progress")
+    ap = argparse.ArgumentParser(description="Terminal touch-typing tutor (QWERTY, Dvorak, Colemak).")
+    ap.add_argument("--user", metavar="NAME", help="start as this profile (created if new)")
+    ap.add_argument("--reset", action="store_true", help="erase all saved progress for --user NAME")
     ap.add_argument("--seed", type=int, help=argparse.SUPPRESS)
     args = ap.parse_args()
     if args.reset:
-        if DATA_FILE.exists() and input(f"Erase {DATA_FILE}? [y/N] ").lower().startswith("y"):
-            DATA_FILE.unlink()
+        if not args.user:
+            names = [p.get("name", f.stem) for f, p in list_profiles()]
+            ap.error("--reset needs --user NAME" + (f" (profiles: {', '.join(names)})" if names else ""))
+        path = profile_path(args.user)
+        if not path.exists():
+            print(f"No profile called {args.user!r}.")
+        elif input(f"Erase all progress for {args.user} ({path})? [y/N] ").lower().startswith("y"):
+            path.unlink()
             print("Progress erased.")
         return
     if args.seed is not None:
@@ -1694,7 +1832,7 @@ def cli():
     locale.setlocale(locale.LC_ALL, "")
     os.environ.setdefault("ESCDELAY", "25")
     try:
-        curses.wrapper(main)
+        curses.wrapper(main, args.user)
     except KeyboardInterrupt:
         pass
 

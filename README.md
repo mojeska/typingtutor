@@ -5,8 +5,9 @@ A terminal touch-typing tutor for QWERTY, Dvorak and Colemak keyboards. Pure Pyt
 ## Run
 
 ```
-python3 typing_tutor.py          # start
-python3 typing_tutor.py --reset  # erase saved progress
+python3 typing_tutor.py                      # start ("Who's typing?")
+python3 typing_tutor.py --user Jeff          # start straight into a profile (created if new)
+python3 typing_tutor.py --user Jeff --reset  # erase that profile's progress
 ```
 
 Needs a terminal of at least 60x20.
@@ -35,7 +36,9 @@ Needs a terminal of at least 60x20.
   - every 10 items cleared is a new level: faster, busier, and it adds words (once you know
     enough letters), then capitals, numbers and punctuation (once the course has taught them).
   - Score = item length × level × combo multiplier (up to x4 for a streak without a mistake or
-    miss). High score per layout; an extra life every 5 levels.
+    miss) × height zone: the field is split into 5 zones marked on the walls, so clearing an item
+    in the top zone is worth x5, down to x1 just above the ground. High score per layout; an
+    extra life every 5 levels.
   Game keystrokes feed your key stats and mix-ups, but games are left out of WPM averages.
 
 ## Mascot
@@ -60,10 +63,17 @@ Colemak with T/N). Lesson progress, key stats and mix-ups are tracked separately
 For Dvorak and Colemak you can say your system is still set to QWERTY; the tutor then translates
 your keystrokes, so you can learn a new layout without changing any system settings.
 
+## Profiles
+
+Several people can share the tutor under one login. At startup, "Who's typing?" lists everyone's
+profiles (or pick "+ New profile" and type a name); the last one used is preselected. Each profile
+has its own lessons, layout choice, statistics, mix-ups, custom-text places and game high scores.
+"Switch user" on the main menu goes back to the picker. Names are case-insensitive.
+
 ## Tracking
 
 - WPM uses the standard (characters / 5) per minute.
-- Everything is saved to `~/.local/share/typing-tutor/progress.json` (progress files from older
-  versions are migrated automatically into the QWERTY course).
+- Each profile is saved to `~/.local/share/typing-tutor/profiles/<name>.json`. Progress from
+  before profiles existed (`progress.json`) is moved into the first profile you create.
 - **Statistics** shows a WPM trend, timed-test bests, game high score, common mix-ups, a per-key accuracy heatmap,
   your least accurate keys and your practice streak.
