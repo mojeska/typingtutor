@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Terminal touch-typing tutor for QWERTY keyboards.
+"""Terminal touch-typing tutor for QWERTY, Dvorak and Colemak keyboards.
 
 Teaching approach (the classic touch-typing method used by most courses):
   * Start from the home-row anchors (F / J) and add two keys at a time,
@@ -11,18 +11,25 @@ Teaching approach (the classic touch-typing method used by most courses):
   * Accuracy first: a wrong key must be corrected before you can move on,
     and a lesson unlocks the next one only at >= 95% accuracy plus a
     modest speed goal.
-  * Per-key error and speed stats drive a "weak keys" practice mode.
+  * Per-key error and speed stats drive a "weak keys" practice mode, and
+    the keys you type by mistake drive "confused pairs" contrast drills.
+  * Timed tests (1, 2, 5 minutes) and typing your own text files.
+  * Lessons are defined by physical key position, so the same course works
+    for every layout. Dvorak/Colemak can be learned on a QWERTY system by
+    letting the tutor translate keys.
 
 WPM uses the standard definition: (characters typed / 5) per minute.
 Progress is saved to $XDG_DATA_HOME/typing-tutor/progress.json.
 """
 import argparse
 import curses
+import glob
 import json
 import locale
 import os
 import random
 import time
+import unicodedata
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -31,44 +38,46 @@ DATA_FILE = (Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "s
 PASS_ACCURACY = 95.0
 EXERCISE_TOKENS = 30
 
-LESSONS = [
-    dict(title="Home row: f j", keys="fj", wpm=10,
-         tip="Rest your index fingers on F and J - feel the bumps? That's home."),
-    dict(title="Home row: d k", keys="dk", wpm=10,
-         tip="Middle fingers rest on D and K, right beside your index fingers."),
-    dict(title="Home row: s l", keys="sl", wpm=12,
-         tip="Ring fingers rest on S and L."),
-    dict(title="Home row: a ;", keys="a;", wpm=12,
-         tip="Pinkies rest on A and ;. Thumbs float over the space bar."),
-    dict(title="Home row: g h", keys="gh", wpm=13,
-         tip="Index fingers reach sideways to G and H, then snap back home."),
-    dict(title="Top row: e i", keys="ei", wpm=14,
-         tip="Middle fingers reach up to E and I. Keep the other fingers anchored."),
-    dict(title="Top row: r u", keys="ru", wpm=15,
-         tip="Index fingers reach up to R and U."),
-    dict(title="Top row: t y", keys="ty", wpm=15,
-         tip="Index fingers stretch up and inward to T and Y."),
-    dict(title="Top row: w o", keys="wo", wpm=16,
-         tip="Ring fingers reach up to W and O."),
-    dict(title="Top row: q p", keys="qp", wpm=16,
-         tip="Pinkies reach up to Q and P."),
-    dict(title="Bottom row: v m", keys="vm", wpm=17,
-         tip="Index fingers curl down to V and M."),
-    dict(title="Bottom row: c ,", keys="c,", wpm=17,
-         tip="Middle fingers curl down to C and comma."),
-    dict(title="Bottom row: x .", keys="x.", wpm=18,
-         tip="Ring fingers curl down to X and period."),
-    dict(title="Bottom row: z /", keys="z/", wpm=18,
-         tip="Pinkies curl down to Z and slash."),
-    dict(title="Bottom row: b n", keys="bn", wpm=18,
-         tip="Index fingers reach down and inward to B and N."),
-    dict(title="Capitals and '", keys="'", caps=True, wpm=18,
+# The course, by physical key position (row, column) so it works on any layout.
+# Rows: 0 number, 1 top, 2 home, 3 bottom. {0}/{1} in tips are the key names.
+LESSON_PLAN = [
+    dict(title="Home row", pos=[(2, 3), (2, 6)], wpm=10,
+         tip="Rest your index fingers on {0} and {1} - feel the bumps? That's home."),
+    dict(title="Home row", pos=[(2, 2), (2, 7)], wpm=10,
+         tip="Middle fingers rest on {0} and {1}, right beside your index fingers."),
+    dict(title="Home row", pos=[(2, 1), (2, 8)], wpm=12,
+         tip="Ring fingers rest on {0} and {1}."),
+    dict(title="Home row", pos=[(2, 0), (2, 9)], wpm=12,
+         tip="Pinkies rest on {0} and {1}. Thumbs float over the space bar."),
+    dict(title="Home row", pos=[(2, 4), (2, 5)], wpm=13,
+         tip="Index fingers reach sideways to {0} and {1}, then snap back home."),
+    dict(title="Top row", pos=[(1, 2), (1, 7)], wpm=14,
+         tip="Middle fingers reach up to {0} and {1}. Keep the other fingers anchored."),
+    dict(title="Top row", pos=[(1, 3), (1, 6)], wpm=15,
+         tip="Index fingers reach up to {0} and {1}."),
+    dict(title="Top row", pos=[(1, 4), (1, 5)], wpm=15,
+         tip="Index fingers stretch up and inward to {0} and {1}."),
+    dict(title="Top row", pos=[(1, 1), (1, 8)], wpm=16,
+         tip="Ring fingers reach up to {0} and {1}."),
+    dict(title="Top row", pos=[(1, 0), (1, 9)], wpm=16,
+         tip="Pinkies reach up to {0} and {1}."),
+    dict(title="Bottom row", pos=[(3, 3), (3, 6)], wpm=17,
+         tip="Index fingers curl down to {0} and {1}."),
+    dict(title="Bottom row", pos=[(3, 2), (3, 7)], wpm=17,
+         tip="Middle fingers curl down to {0} and {1}."),
+    dict(title="Bottom row", pos=[(3, 1), (3, 8)], wpm=18,
+         tip="Ring fingers curl down to {0} and {1}."),
+    dict(title="Bottom row", pos=[(3, 0), (3, 9)], wpm=18,
+         tip="Pinkies curl down to {0} and {1}."),
+    dict(title="Bottom row", pos=[(3, 4), (3, 5)], wpm=18,
+         tip="Index fingers reach down and inward to {0} and {1}."),
+    dict(title="Capitals and {0}", pos=[(2, 10)], caps=True, wpm=18,
          tip="Hold Shift with the pinky of the OPPOSITE hand to the letter. "
-             "The right pinky types '."),
+             "The right pinky types the {0}."),
     dict(title="Number row", keys="1234567890", wpm=15,
          tip="Reach straight up; each number uses the same finger as the letters below it."),
     dict(title="Punctuation: ? ! : -", keys="?!:-", wpm=18,
-         tip="? ! and : need Shift. The hyphen is a right-pinky reach."),
+         tip="? ! and : need Shift. The highlighted keys show where each one lives."),
     dict(title="Real sentences", keys="", sentences=True, wpm=25,
          tip="Everything together. Aim for a steady rhythm rather than bursts of speed."),
 ]
@@ -144,19 +153,72 @@ SENTENCES = [
 # Keyboard model
 # ---------------------------------------------------------------------------
 
-FINGERS = {}
-for _keys, _finger in [("`1qaz", "left pinky"), ("2wsx", "left ring"), ("3edc", "left middle"),
-                       ("45rtfgvb", "left index"), ("67yuhjnm", "right index"),
-                       ("8ik,", "right middle"), ("9ol.", "right ring"),
-                       ("0-=p[];'/", "right pinky")]:
-    for _k in _keys:
-        FINGERS[_k] = _finger
-FINGERS[" "] = "either thumb"
-
-SHIFTED = dict(zip("~!@#$%^&*()_+{}:\"<>?", "`1234567890-=[];',./"))
-
-KB_ROWS = [("`1234567890-=", 0), ("qwertyuiop[]", 6), ("asdfghjkl;'", 7), ("zxcvbnm,./", 9)]
+LAYOUTS = {
+    "qwerty": dict(name="QWERTY",
+                   rows=("`1234567890-=", "qwertyuiop[]", "asdfghjkl;'", "zxcvbnm,./"),
+                   shifted=("~!@#$%^&*()_+", "QWERTYUIOP{}", 'ASDFGHJKL:"', "ZXCVBNM<>?")),
+    "dvorak": dict(name="Dvorak",
+                   rows=("`1234567890[]", "',.pyfgcrl/=", "aoeuidhtns-", ";qjkxbmwvz"),
+                   shifted=("~!@#$%^&*(){}", '"<>PYFGCRL?+', "AOEUIDHTNS_", ":QJKXBMWVZ")),
+    "colemak": dict(name="Colemak",
+                    rows=("`1234567890-=", "qwfpgjluy;[]", "arstdhneio'", "zxcvbkm,./"),
+                    shifted=("~!@#$%^&*()_+", "QWFPGJLUY:{}", 'ARSTDHNEIO"', "ZXCVBKM<>?")),
+}
+ROW_OFFSETS = (0, 6, 7, 9)
 KB_WIDTH = 56
+# Finger for each column of the letter rows; the number row sits half a key left.
+COL_FINGERS = ["left pinky", "left ring", "left middle", "left index", "left index",
+               "right index", "right index", "right middle", "right ring"]
+KEY_NAMES = {",": "comma", ".": "period", "/": "slash", ";": "semicolon",
+             "'": "apostrophe", "-": "hyphen", "[": "left bracket", "=": "equals"}
+
+# Set by set_layout(): the active layout's keyboard, fingers and course.
+LAYOUT = "qwerty"
+KB_ROWS, FINGERS, SHIFTED, TYPEABLE, REMAP, LESSONS = [], {}, {}, set(), {}, []
+
+
+def key_name(k):
+    return KEY_NAMES.get(k, k.upper())
+
+
+def build_lessons(rows):
+    lessons = []
+    for plan in LESSON_PLAN:
+        lesson = dict(plan)
+        if "pos" in plan:
+            keys = "".join(rows[r][c] for r, c in plan["pos"])
+            names = [key_name(k) for k in keys]
+            lesson["keys"] = keys
+            lesson["title"] = (plan["title"].format(*keys) if "{" in plan["title"]
+                               else f"{plan['title']}: {' '.join(keys)}")
+            lesson["tip"] = plan["tip"].format(*names)
+            del lesson["pos"]
+        lessons.append(lesson)
+    return lessons
+
+
+def set_layout(key, remap=False):
+    """Activate a layout. With remap, keys from a QWERTY system are translated."""
+    global LAYOUT, KB_ROWS, FINGERS, SHIFTED, TYPEABLE, REMAP, LESSONS
+    lay = LAYOUTS[key]
+    rows, shifted = lay["rows"], lay["shifted"]
+    LAYOUT = key
+    KB_ROWS = list(zip(rows, ROW_OFFSETS))
+    FINGERS = {" ": "either thumb"}
+    for r, row in enumerate(rows):
+        for c, k in enumerate(row):
+            col = max(0, c - (r == 0))
+            FINGERS[k] = COL_FINGERS[col] if col < len(COL_FINGERS) else "right pinky"
+    SHIFTED = {s: u for srow, urow in zip(shifted, rows) for s, u in zip(srow, urow)
+               if not s.isalpha()}
+    TYPEABLE = set("".join(rows + shifted)) | {" "}
+    qw = LAYOUTS["qwerty"]
+    REMAP = {q: k for qrow, krow in zip(qw["rows"] + qw["shifted"], rows + shifted)
+             for q, k in zip(qrow, krow) if q != k} if remap else {}
+    LESSONS = build_lessons(rows)
+
+
+set_layout("qwerty")
 
 # colour pair numbers
 GREEN, RED, PINKY, RING, MIDDLE, INDEX, ERRBG = range(1, 8)
@@ -251,11 +313,63 @@ def make_exercise(chars, new, caps=False, new_caps=False, n=EXERCISE_TOKENS):
 
 
 def sentence_text(min_len=280):
-    picks = random.sample(SENTENCES, len(SENTENCES))
-    out = []
-    while sum(len(s) + 1 for s in out) < min_len:
-        out.append(picks[len(out)])
+    """Random sentences (no repeats until all have been used)."""
+    out, picks, total = [], [], 0
+    while total < min_len:
+        if not picks:
+            picks = random.sample(SENTENCES, len(SENTENCES))
+        out.append(picks.pop())
+        total += len(out[-1]) + 1
     return " ".join(out)
+
+
+def confusion_exercise(chars, pairs, n=EXERCISE_TOKENS):
+    """Contrast drills for key pairs that get mixed up: (intended, typed)."""
+    letters = sorted(c for c in chars if c.isalpha())
+    pool = [w for w in WORDS if set(w) <= set(letters)]
+    both = {p: [w for w in pool if p[0] in w and p[1] in w] for p in pairs}
+    either = {p: [w for w in pool if p[0] in w or p[1] in w] for p in pairs}
+
+    def contrast(a, b):
+        return "".join(random.choice((a, b)) for _ in range(random.randint(3, 5)))
+
+    tokens = []
+    for a, b in pairs:
+        tokens += [a + b + a, b + a + b, a * 2 + b * 2]
+    while len(tokens) < n:
+        p = random.choice(pairs)
+        r = random.random()
+        if both[p] and r < 0.4:
+            tokens.append(random.choice(both[p]))
+        elif either[p] and r < 0.85:
+            tokens.append(random.choice(either[p]))
+        else:
+            tokens.append(contrast(*p))
+    return " ".join(tokens)
+
+
+TEXT_FIXES = {"\u2018": "'", "\u2019": "'", "\u201a": "'", "\u201c": '"', "\u201d": '"',
+              "\u201e": '"', "\u2013": "-", "\u2014": "-", "\u2212": "-", "\u2026": "...",
+              "\u00a0": " "}
+
+
+def clean_text(raw):
+    """Make arbitrary text typeable: ASCII-fy quotes/dashes/accents, one space between words."""
+    raw = unicodedata.normalize("NFKD", "".join(TEXT_FIXES.get(c, c) for c in raw))
+    return " ".join("".join(c for c in raw if c in TYPEABLE or c.isspace()).split())
+
+
+def next_chunk(text, offset, size=300):
+    """Next ~size characters from offset, ending at a sentence or word break.
+    Returns (chunk, offset of the following chunk)."""
+    if len(text) - offset <= size * 1.3:
+        return text[offset:], len(text)
+    lo, hi = offset + int(size * 0.7), offset + int(size * 1.3)
+    stop = max(text.rfind(p, lo, hi) for p in (". ", "! ", "? "))
+    space = stop + 1 if stop >= 0 else text.find(" ", offset + size)
+    if space < 0:
+        return text[offset:offset + size], offset + size
+    return text[offset:space], space + 1
 
 
 def lesson_text(i):
@@ -278,11 +392,31 @@ def load_progress():
     except json.JSONDecodeError:
         DATA_FILE.replace(DATA_FILE.with_suffix(".corrupt.json"))
         data = {}
-    data.setdefault("unlocked", 0)
-    data.setdefault("lessons", {})
+    layouts = data.setdefault("layouts", {})
+    # Version 1 kept a single (QWERTY) course at the top level.
+    old = {k: data.pop(k) for k in ("unlocked", "lessons", "keys") if k in data}
+    if old:
+        layouts.setdefault("qwerty", old)
+    if data.get("layout") not in LAYOUTS:
+        data["layout"] = "qwerty"
+    data.setdefault("remap", False)
     data.setdefault("sessions", [])
-    data.setdefault("keys", {})
+    data.setdefault("custom", {"path": None, "offsets": {}})
     return data
+
+
+def lay(prog):
+    """Progress for the active layout."""
+    d = prog["layouts"].setdefault(prog["layout"], {})
+    d.setdefault("unlocked", 0)
+    d.setdefault("lessons", {})
+    d.setdefault("keys", {})
+    d.setdefault("confusions", {})
+    return d
+
+
+def layout_sessions(prog):
+    return [s for s in prog["sessions"] if s.get("layout", "qwerty") == prog["layout"]]
 
 
 def save_progress(prog):
@@ -292,29 +426,32 @@ def save_progress(prog):
     tmp.replace(DATA_FILE)
 
 
-def record(prog, mode, lesson_idx, res):
+def record(prog, mode, lesson_idx, res, **extra):
     """Save a finished exercise. Returns pass/fail for lessons, else None."""
+    lp = lay(prog)
     prog["sessions"].append(dict(
         date=datetime.now().isoformat(timespec="seconds"), mode=mode, lesson=lesson_idx,
-        wpm=round(res["wpm"], 1), accuracy=round(res["accuracy"], 1),
-        seconds=round(res["seconds"], 1), chars=res["chars"], errors=res["errors"]))
+        layout=prog["layout"], wpm=round(res["wpm"], 1), accuracy=round(res["accuracy"], 1),
+        seconds=round(res["seconds"], 1), chars=res["chars"], errors=res["errors"], **extra))
     for k, (hits, errs, secs, timed) in res["keys"].items():
-        s = prog["keys"].setdefault(k, {"hits": 0, "errors": 0, "time": 0.0, "timed": 0})
+        s = lp["keys"].setdefault(k, {"hits": 0, "errors": 0, "time": 0.0, "timed": 0})
         s["hits"] += hits
         s["errors"] += errs
         s["time"] = round(s["time"] + secs, 3)
         s["timed"] += timed
+    for pair, n in res["confusions"].items():
+        lp["confusions"][pair] = lp["confusions"].get(pair, 0) + n
     passed = None
     if mode == "lesson":
         passed = res["accuracy"] >= PASS_ACCURACY and res["wpm"] >= LESSONS[lesson_idx]["wpm"]
-        rec = prog["lessons"].setdefault(str(lesson_idx), {
+        rec = lp["lessons"].setdefault(str(lesson_idx), {
             "attempts": 0, "best_wpm": 0.0, "best_accuracy": 0.0, "passed": False})
         rec["attempts"] += 1
         rec["best_wpm"] = max(rec["best_wpm"], round(res["wpm"], 1))
         rec["best_accuracy"] = max(rec["best_accuracy"], round(res["accuracy"], 1))
         rec["passed"] = rec["passed"] or passed
         if passed:
-            prog["unlocked"] = max(prog["unlocked"], min(lesson_idx + 1, len(LESSONS) - 1))
+            lp["unlocked"] = max(lp["unlocked"], min(lesson_idx + 1, len(LESSONS) - 1))
     save_progress(prog)
     return passed
 
@@ -322,7 +459,7 @@ def record(prog, mode, lesson_idx, res):
 def key_totals(prog):
     """Per-key [hits, errors, seconds, timed] merged by physical key."""
     agg = {}
-    for k, s in prog["keys"].items():
+    for k, s in lay(prog)["keys"].items():
         a = agg.setdefault(base_key(k)[0], [0, 0, 0.0, 0])
         a[0] += s["hits"]
         a[1] += s["errors"]
@@ -338,6 +475,22 @@ def weak_keys(prog, allowed, n=3):
         if k in allowed and hits + errs >= 5:
             scored.append((errs / (hits + errs) * 5 + (secs / timed if timed else 0), k))
     return [k for _, k in sorted(scored, reverse=True)[:n]]
+
+
+def confused_pairs(prog, n=3):
+    """Most frequent (intended, typed) mix-ups, ignoring forgotten Shifts and space."""
+    pairs = []
+    for k, cnt in sorted(lay(prog)["confusions"].items(), key=lambda kv: -kv[1]):
+        a, b = k
+        if cnt < 2 or " " in k or b not in TYPEABLE or base_key(a)[0] == base_key(b)[0]:
+            continue
+        if a.isalpha() and b.isalpha():
+            a, b = a.lower(), b.lower()
+        if (a, b) not in pairs and (b, a) not in pairs:
+            pairs.append((a, b))
+        if len(pairs) == n:
+            break
+    return pairs
 
 
 def practice_streak(sessions):
@@ -524,7 +677,7 @@ def intro(scr, heading, lines, text, highlight):
             return False
 
 
-def draw_exercise(scr, title, text, pos, wrong, missed, elapsed, errors):
+def draw_exercise(scr, title, text, pos, wrong, missed, elapsed, errors, limit=None):
     scr.erase()
     h, w = scr.getmaxyx()
     if h < 20 or w < 60:
@@ -536,8 +689,9 @@ def draw_exercise(scr, title, text, pos, wrong, missed, elapsed, errors):
     wpm = pos / 5 / (elapsed / 60) if elapsed > 1 else 0.0
     acc = 100 * pos / (pos + errors) if pos + errors else 100.0
     put(scr, 0, x0, title, curses.A_BOLD | C(MIDDLE))
-    put(scr, 1, x0, f"{wpm:5.1f} WPM   {acc:5.1f}% accuracy   {fmt_time(elapsed)}   "
-                    f"{100 * pos // len(text)}% done", curses.A_DIM)
+    progress = (f"{fmt_time(max(0.0, limit - elapsed))} left" if limit
+                else f"{fmt_time(elapsed)}   {100 * pos // len(text)}% done")
+    put(scr, 1, x0, f"{wpm:5.1f} WPM   {acc:5.1f}% accuracy   {progress}", curses.A_DIM)
 
     lines = wrap(text, width)
     cur = next(i for i, (s, line) in enumerate(lines) if s <= pos < s + len(line))
@@ -569,18 +723,24 @@ def draw_exercise(scr, title, text, pos, wrong, missed, elapsed, errors):
     scr.refresh()
 
 
-def run_exercise(scr, title, text):
-    """Type `text`. Wrong keys must be corrected. Returns result dict or None."""
+def run_exercise(scr, title, text, limit=None):
+    """Type `text`. Wrong keys must be corrected. With `limit` (seconds) the round
+    ends when time runs out. Returns result dict or None."""
     scr.timeout(200)  # redraw periodically so the clock ticks
     pos = errors = 0
     start = last = None
     missed = False
     wrong = set()
     keys = {}  # char -> [hits, errors, seconds, timed]
+    confusions = {}  # intended + typed char -> count
+    timed_out = False
     while pos < len(text):
         now = time.monotonic()
+        if limit and start and now - start >= limit:
+            timed_out = True
+            break
         draw_exercise(scr, title, text, pos, wrong, missed,
-                      now - start if start else 0.0, errors)
+                      now - start if start else 0.0, errors, limit)
         try:
             ch = scr.get_wch()
         except curses.error:
@@ -589,9 +749,13 @@ def run_exercise(scr, title, text):
             return None
         if not isinstance(ch, str) or not ch.isprintable():
             continue
+        ch = REMAP.get(ch, ch)
         now = time.monotonic()
         if start is None:
             start = last = now
+        elif limit and now - start >= limit:
+            timed_out = True
+            break
         want = text[pos]
         stat = keys.setdefault(want, [0, 0, 0.0, 0])
         if ch == want:
@@ -604,16 +768,18 @@ def run_exercise(scr, title, text):
             missed = False
         else:
             stat[1] += 1
+            confusions[want + ch] = confusions.get(want + ch, 0) + 1
             errors += 1
             wrong.add(pos)
             missed = True
-    secs = max(last - start, 1.0)
-    return dict(wpm=len(text) / 5 / (secs / 60), accuracy=100 * len(text) / (len(text) + errors),
-                seconds=secs, chars=len(text), errors=errors, keys=keys)
+    secs = limit if timed_out else max(last - start, 1.0)
+    return dict(wpm=pos / 5 / (secs / 60), accuracy=100 * pos / max(1, pos + errors),
+                seconds=secs, chars=pos, errors=errors, keys=keys, confusions=confusions)
 
 
-def results(scr, heading, res, goal_wpm=None, passed=None, best=None, last_lesson=False):
-    """Show results. Returns 'next', 'retry' or 'menu'."""
+def results(scr, heading, res, goal_wpm=None, passed=None, best=None, last_lesson=False,
+            extra=()):
+    """Show results. Returns 'next', 'more', 'retry' or 'menu'."""
     ok, bad = C(GREEN) | curses.A_BOLD, C(RED) | curses.A_BOLD
     lines = []
     if passed is not None:
@@ -634,6 +800,7 @@ def results(scr, heading, res, goal_wpm=None, passed=None, best=None, last_lesso
     lines.append((f"Time:      {fmt_time(res['seconds'])}    errors: {res['errors']}", 0))
     if best is not None:
         lines.append((f"Best on this lesson: {best:.1f} WPM", 0))
+    lines += extra
     trouble = sorted(((s[1], k) for k, s in res["keys"].items() if s[1]), reverse=True)[:5]
     if trouble:
         lines.append(("", 0))
@@ -658,7 +825,7 @@ def results(scr, heading, res, goal_wpm=None, passed=None, best=None, last_lesso
         scr.refresh()
         ch = wait_key(scr)
         if ch in ("\n", "\r", curses.KEY_ENTER):
-            return "next" if can_advance else "retry"
+            return "next" if can_advance else "more" if passed is None else "retry"
         if ch == "r":
             return "retry"
         if ch in ("\x1b", "q"):
@@ -687,15 +854,20 @@ def play_lesson(scr, prog, i):
             return
         passed = record(prog, "lesson", i, res)
         action = results(scr, heading, res, lesson["wpm"], passed,
-                         prog["lessons"][str(i)]["best_wpm"], i == len(LESSONS) - 1)
+                         lay(prog)["lessons"][str(i)]["best_wpm"], i == len(LESSONS) - 1)
         if action == "menu":
             return
         if action == "next":
             i += 1
 
 
+def taught(prog):
+    """Characters taught so far on this layout, and whether capitals are."""
+    return lesson_chars(lay(prog)["unlocked"])
+
+
 def play_weak(scr, prog):
-    chars, caps = lesson_chars(prog["unlocked"])
+    chars, caps = taught(prog)
     while True:
         weak = weak_keys(prog, chars)
         if not weak:
@@ -717,6 +889,78 @@ def play_weak(scr, prog):
             return
 
 
+def play_confusions(scr, prog):
+    heading = "Confused-pair drills"
+    while True:
+        pairs = confused_pairs(prog)
+        if not pairs:
+            message(scr, heading, [
+                "No mix-ups recorded yet.",
+                "Every time you press one key instead of another I note the pair.",
+                "Once a pair has happened a couple of times it shows up here."])
+            return
+        chars, _ = taught(prog)
+        chars = chars | {c for p in pairs for c in p}
+        text = confusion_exercise(chars, pairs)
+        info = ["Pairs of keys you tend to mix up (meant -> typed):",
+                "   " + "    ".join(f"{a} -> {b}" for a, b in pairs), "",
+                "Contrast drills make each finger learn exactly which key is its own.",
+                "Go slowly enough to get every one right."]
+        if not intro(scr, heading, info, text, {base_key(c)[0] for p in pairs for c in p}):
+            return
+        res = run_exercise(scr, heading, text)
+        if res is None:
+            return
+        record(prog, "confusion", None, res)
+        if results(scr, heading, res) == "menu":
+            return
+
+
+TEST_LENGTHS = (60, 120, 300)
+
+
+def play_test(scr, prog):
+    def best(limit):
+        return max((s["wpm"] for s in layout_sessions(prog)
+                    if s["mode"] == "test" and s.get("limit") == limit), default=None)
+
+    items = []
+    for limit in TEST_LENGTHS:
+        b = best(limit)
+        label = f"{limit // 60} minute{'s' if limit > 60 else ' '}"
+        items.append((label + (f"    best {b:5.1f} WPM" if b is not None else ""), True))
+    full = lay(prog)["unlocked"] == len(LESSONS) - 1
+    header = ["Type as far as you can before the clock runs out.",
+              "Text: real sentences." if full else
+              "Text: only the keys you've learned (finish the course for real sentences)."]
+    choice = menu(scr, "Timed test", items, header)
+    if choice is None:
+        return
+    limit = TEST_LENGTHS[choice]
+    heading = f"Timed test - {limit // 60} minute{'s' if limit > 60 else ''}"
+    while True:
+        if full:
+            text = sentence_text(limit * 15)
+        else:
+            chars, caps = taught(prog)
+            text = make_exercise(chars, "", caps, n=limit * 3)
+        if not intro(scr, heading, ["The clock starts with your first key.",
+                                    "Wrong keys still have to be fixed, so accuracy pays."],
+                     text, set()):
+            return
+        res = run_exercise(scr, heading, text, limit)
+        if res is None:
+            return
+        prev = best(limit)
+        record(prog, "test", None, res, limit=limit)
+        extra = [("", 0), ("New personal best!", C(GREEN) | curses.A_BOLD)] \
+            if prev is not None and res["wpm"] > prev else []
+        time.sleep(0.5)  # don't let a keystroke typed at the buzzer dismiss the results
+        curses.flushinp()
+        if results(scr, heading, res, extra=extra) == "menu":
+            return
+
+
 def play_free(scr, prog):
     while True:
         text = sentence_text()
@@ -733,15 +977,163 @@ def play_free(scr, prog):
             return
 
 
+def prompt(scr, title, lines, default=""):
+    """Single-line text input with Tab filename completion. Returns str or None."""
+    buf, matches = default, []
+    scr.timeout(-1)
+    try:
+        curses.curs_set(1)
+    except curses.error:
+        pass
+    try:
+        while True:
+            scr.erase()
+            h, w = scr.getmaxyx()
+            put(scr, 1, 2, title, curses.A_BOLD | C(MIDDLE))
+            for i, line in enumerate(lines):
+                put(scr, 3 + i, 4, line)
+            y = 4 + len(lines)
+            for i, m in enumerate(matches[:h - y - 4]):
+                put(scr, y + 2 + i, 6, m, curses.A_DIM)
+            put(scr, h - 1, 2, "Enter: OK   Tab: complete   Ctrl-U: clear   Esc: back", curses.A_DIM)
+            shown = buf[-(w - 8):]
+            put(scr, y, 4, "> " + shown)
+            scr.move(y, min(w - 1, 6 + len(shown)))
+            scr.refresh()
+            ch = scr.get_wch()
+            matches = []
+            if ch in ("\n", "\r", curses.KEY_ENTER):
+                return buf.strip()
+            if ch == "\x1b":
+                return None
+            if ch in (curses.KEY_BACKSPACE, "\x7f", "\b"):
+                buf = buf[:-1]
+            elif ch == "\x15":
+                buf = ""
+            elif ch == "\t":
+                found = sorted(glob.glob(os.path.expanduser(buf) + "*"))
+                if found:
+                    common = os.path.commonprefix(found)
+                    if len(found) == 1 and os.path.isdir(common):
+                        common += "/"
+                    if buf.startswith("~"):
+                        common = "~" + common[len(os.path.expanduser("~")):]
+                    buf = common if len(common) >= len(buf) else buf
+                    if len(found) > 1:
+                        matches = [os.path.basename(f.rstrip("/")) for f in found]
+            elif isinstance(ch, str) and ch.isprintable():
+                buf += ch
+    finally:
+        try:
+            curses.curs_set(0)
+        except curses.error:
+            pass
+
+
+def play_custom(scr, prog):
+    custom = prog["custom"]
+    path = custom.get("path")
+    if path:
+        name = os.path.basename(path)
+        choice = menu(scr, "Type your own text", [
+            (f"Continue {name}", True), (f"Start {name} from the beginning", True),
+            ("Open a different file", True)])
+        if choice is None:
+            return
+        if choice == 1:
+            custom["offsets"][path] = 0
+        elif choice == 2:
+            path = None
+    if not path:
+        entered = prompt(scr, "Type your own text", [
+            "Path to a plain-text file (a book chapter, article, notes, code comments...).",
+            "Curly quotes, dashes and accents are simplified; untypeable characters are dropped.",
+            "Your place in each file is remembered."], custom.get("path") or "~/")
+        if not entered:
+            return
+        path = str(Path(os.path.expanduser(entered)).resolve())
+    try:
+        text = clean_text(Path(path).read_text(errors="replace"))
+    except OSError as e:
+        message(scr, "Type your own text", [f"Couldn't read {path}:", str(e.strerror or e)])
+        return
+    if not text:
+        message(scr, "Type your own text", ["That file has no typeable text in it."])
+        return
+    custom["path"] = path
+    save_progress(prog)
+    heading = f"Your text: {os.path.basename(path)}"
+    while True:
+        offset = custom["offsets"].get(path, 0)
+        if offset >= len(text):
+            offset = 0
+        chunk, nxt = next_chunk(text, offset)
+        info = [f"{100 * offset // len(text)}% of the way through "
+                f"({len(text):,} characters in all).",
+                "Everything on the keyboard is fair game here."]
+        if not intro(scr, heading, info, chunk, set()):
+            return
+        res = run_exercise(scr, heading, chunk)
+        if res is None:
+            return
+        record(prog, "custom", None, res)
+        extra = [("", 0), ("You reached the end - next round starts from the top.", 0)] \
+            if nxt >= len(text) else []
+        action = results(scr, heading, res, extra=extra)
+        if action != "retry":
+            custom["offsets"][path] = 0 if nxt >= len(text) else nxt
+            save_progress(prog)
+        if action == "menu":
+            return
+
+
+def choose_layout(scr, prog):
+    keys = list(LAYOUTS)
+    items = []
+    for k in keys:
+        passed = sum(1 for r in prog["layouts"].get(k, {}).get("lessons", {}).values()
+                     if r.get("passed"))
+        mark = "✓" if k == prog["layout"] else " "
+        items.append((f"{mark} {LAYOUTS[k]['name']:<8}  {passed:2}/{len(LESSONS)} lessons passed", True))
+    i = menu(scr, "Keyboard layout", items,
+             ["Lessons, statistics and mix-ups are tracked separately for each layout."],
+             keys.index(prog["layout"]))
+    if i is None:
+        return
+    key, remap = keys[i], False
+    if key != "qwerty":
+        name = LAYOUTS[key]["name"]
+        j = menu(scr, f"{name}: how is your computer set up?", [
+            (f"My system keyboard layout is already {name}", True),
+            (f"My system is QWERTY - translate my keys to {name}", True)],
+            [f"Translating lets you learn {name} without changing any system settings:",
+             f"press the key where the {name} letter sits and the tutor sees that letter."],
+            1 if prog["remap"] else 0)
+        if j is None:
+            return
+        remap = j == 1
+    prog["layout"], prog["remap"] = key, remap
+    set_layout(key, remap)
+    lay(prog)
+    save_progress(prog)
+
+
 def choose_lesson(scr, prog):
+    lp = lay(prog)
     items = []
     for i, lesson in enumerate(LESSONS):
-        rec = prog["lessons"].get(str(i), {})
-        mark = "✓" if rec.get("passed") else ("▸" if i == prog["unlocked"] else " ")
+        rec = lp["lessons"].get(str(i), {})
+        mark = "✓" if rec.get("passed") else ("▸" if i == lp["unlocked"] else " ")
         best = f"best {rec['best_wpm']:4.1f} WPM" if rec.get("attempts") else ""
         items.append((f"{mark} {i + 1:2}. {lesson['title']:<22} goal {lesson['wpm']:2} WPM   {best}",
-                      i <= prog["unlocked"]))
-    return menu(scr, "Choose a lesson", items, sel=prog["unlocked"])
+                      i <= lp["unlocked"]))
+    return menu(scr, "Choose a lesson", items, sel=lp["unlocked"])
+
+
+def pick_lesson(scr, prog):
+    i = choose_lesson(scr, prog)
+    if i is not None:
+        play_lesson(scr, prog, i)
 
 
 def sparkline(values):
@@ -751,25 +1143,34 @@ def sparkline(values):
     return "".join(blocks[int((v - lo) / span * (len(blocks) - 1))] for v in values)
 
 
+def layout_label(prog):
+    name = LAYOUTS[prog["layout"]]["name"]
+    return name + (" (translated from QWERTY)" if prog["remap"] else "")
+
+
 def summary_lines(prog):
-    sessions = prog["sessions"]
-    passed = sum(1 for r in prog["lessons"].values() if r.get("passed"))
-    lines = [f"Lessons passed: {passed}/{len(LESSONS)}"]
+    all_sessions = prog["sessions"]
+    sessions = layout_sessions(prog)
+    passed = sum(1 for r in lay(prog)["lessons"].values() if r.get("passed"))
+    lines = [f"{LAYOUTS[prog['layout']]['name']} lessons passed: {passed}/{len(LESSONS)}"]
     if sessions:
         recent = sessions[-10:]
         lines.append(f"Last {len(recent)} sessions: "
                      f"{sum(s['wpm'] for s in recent) / len(recent):.1f} WPM, "
                      f"{sum(s['accuracy'] for s in recent) / len(recent):.1f}% accuracy")
+    if all_sessions:
         today = date.today().isoformat()
-        mins = sum(s["seconds"] for s in sessions if s["date"].startswith(today)) / 60
-        lines.append(f"Today: {mins:.0f} min practised    streak: {practice_streak(sessions)} day(s)")
+        mins = sum(s["seconds"] for s in all_sessions if s["date"].startswith(today)) / 60
+        lines.append(f"Today: {mins:.0f} min practised    streak: "
+                     f"{practice_streak(all_sessions)} day(s)")
     return lines
 
 
 def stats_screen(scr, prog):
-    sessions = prog["sessions"]
+    sessions = layout_sessions(prog)
     if not sessions:
-        message(scr, "Statistics", ["No sessions yet - go type something!"])
+        message(scr, "Statistics", [f"No {LAYOUTS[prog['layout']]['name']} sessions yet - "
+                                    "go type something!"])
         return
     totals = key_totals(prog)
 
@@ -782,11 +1183,21 @@ def stats_screen(scr, prog):
 
     scr.erase()
     x0 = 4
-    put(scr, 1, 2, "Statistics", curses.A_BOLD | C(MIDDLE))
+    put(scr, 1, 2, f"Statistics - {layout_label(prog)}", curses.A_BOLD | C(MIDDLE))
     lines = summary_lines(prog) + [
         f"Sessions: {len(sessions)}    total time: {fmt_time(sum(s['seconds'] for s in sessions))}"
         f"    best: {max(s['wpm'] for s in sessions):.1f} WPM",
     ]
+    tests = [f"{m // 60} min {max(s['wpm'] for s in sessions if s.get('limit') == m):.1f}"
+             for m in TEST_LENGTHS
+             if any(s["mode"] == "test" and s.get("limit") == m for s in sessions)]
+    if tests:
+        lines.append("Timed-test bests (WPM): " + "   ".join(tests))
+    mixups = sorted(lay(prog)["confusions"].items(), key=lambda kv: -kv[1])[:5]
+    if mixups:
+        lines.append("Common mix-ups (meant>typed): " + "  ".join(
+            f"{'space' if k[0] == ' ' else k[0]}>{'space' if k[1] == ' ' else k[1]} {n}"
+            for k, n in mixups))
     for i, line in enumerate(lines):
         put(scr, 3 + i, x0, line)
     y = 4 + len(lines)
@@ -802,7 +1213,7 @@ def stats_screen(scr, prog):
     draw_keyboard(scr, y + 1, x0, acc_attr)
     y += 7
     ranked = sorted(((e / (h + e), (t / n if n else 0), k) for k, (h, e, t, n) in totals.items()
-                     if h + e >= 5), reverse=True)[:6]
+                     if h + e >= 5), reverse=True)[:min(6, scr.getmaxyx()[0] - y - 3)]
     if ranked:
         put(scr, y, x0, "Least accurate keys:", curses.A_BOLD)
         for i, (err, avg, k) in enumerate(ranked):
@@ -821,31 +1232,29 @@ def main(scr):
         pass
     init_colors()
     prog = load_progress()
+    set_layout(prog["layout"], prog["remap"])
     sel = 0
     while True:
-        cur = prog["unlocked"]
-        items = [(f"Continue: lesson {cur + 1} - {LESSONS[cur]['title']}", True),
-                 ("Choose a lesson", True),
-                 ("Practise weak keys", True),
-                 ("Free typing (full keyboard)", True),
-                 ("Statistics", True),
-                 ("Quit", True)]
-        choice = menu(scr, "Typing Tutor", items, summary_lines(prog), sel)
-        if choice is None or choice == 5:
+        cur = lay(prog)["unlocked"]
+        actions = [
+            (f"Continue: lesson {cur + 1} - {LESSONS[cur]['title']}",
+             lambda: play_lesson(scr, prog, lay(prog)["unlocked"])),
+            ("Choose a lesson", lambda: pick_lesson(scr, prog)),
+            ("Practise weak keys", lambda: play_weak(scr, prog)),
+            ("Drill mixed-up key pairs", lambda: play_confusions(scr, prog)),
+            ("Timed test (1, 2 or 5 minutes)", lambda: play_test(scr, prog)),
+            ("Free typing (full keyboard)", lambda: play_free(scr, prog)),
+            ("Type your own text", lambda: play_custom(scr, prog)),
+            ("Statistics", lambda: stats_screen(scr, prog)),
+            (f"Keyboard layout: {layout_label(prog)}", lambda: choose_layout(scr, prog)),
+            ("Quit", None),
+        ]
+        choice = menu(scr, "Typing Tutor", [(label, True) for label, _ in actions],
+                      summary_lines(prog), sel)
+        if choice is None or actions[choice][1] is None:
             return
         sel = choice
-        if choice == 0:
-            play_lesson(scr, prog, cur)
-        elif choice == 1:
-            i = choose_lesson(scr, prog)
-            if i is not None:
-                play_lesson(scr, prog, i)
-        elif choice == 2:
-            play_weak(scr, prog)
-        elif choice == 3:
-            play_free(scr, prog)
-        elif choice == 4:
-            stats_screen(scr, prog)
+        actions[choice][1]()
 
 
 def cli():

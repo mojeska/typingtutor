@@ -1,6 +1,6 @@
 # Typing Tutor
 
-A terminal touch-typing tutor for QWERTY keyboards. Pure Python standard library (curses), no dependencies.
+A terminal touch-typing tutor for QWERTY, Dvorak and Colemak keyboards. Pure Python standard library (curses), no dependencies.
 
 ## Run
 
@@ -13,16 +13,39 @@ Needs a terminal of at least 60x20.
 
 ## Method
 
-- Keys are introduced two at a time, starting from the home-row anchors (F/J) and working outward:
+- Keys are introduced two at a time, starting from the home-row index-finger keys and working outward:
   home row, top row, bottom row, Shift/capitals, numbers, punctuation, then full sentences (19 lessons).
 - Exercises only use keys you've already been taught.
 - An on-screen keyboard is coloured by finger and highlights the next key, so you never need to look down.
 - Accuracy first: wrong keys must be corrected before moving on. A lesson unlocks the next at
   95% accuracy plus a speed goal (10 → 25 WPM).
 
+## Practice modes
+
+- **Weak-key practice** drills your three slowest / least accurate keys.
+- **Mixed-up key pairs**: every wrong keystroke records which key you meant and which you hit.
+  Pairs that keep happening (e.g. `e` → `r`) get contrast drills (`ere rer eerr`) plus words
+  containing both keys. Forgotten Shifts and space slips are ignored.
+- **Timed tests** of 1, 2 or 5 minutes, with a personal best for each. Uses real sentences once
+  you've finished the course, otherwise only the keys you've learned.
+- **Free typing**: random real sentences using the full keyboard.
+- **Type your own text**: point it at any plain-text file (Tab completes paths). Curly quotes, dashes and
+  accents are simplified, and it works through the file ~300 characters at a time, remembering
+  your place in each file.
+
+## Keyboard layouts
+
+Choose QWERTY, Dvorak or Colemak from the menu. The course is defined by physical key position,
+so each layout gets the same lesson sequence built from its own keys (Dvorak starts with U/H,
+Colemak with T/N). Lesson progress, key stats and mix-ups are tracked separately per layout.
+
+For Dvorak and Colemak you can say your system is still set to QWERTY; the tutor then translates
+your keystrokes, so you can learn a new layout without changing any system settings.
+
 ## Tracking
 
 - WPM uses the standard (characters / 5) per minute.
-- Every session and per-key accuracy/speed is saved to `~/.local/share/typing-tutor/progress.json`.
-- **Weak-key practice** drills your three worst keys.
-- **Statistics** shows a WPM trend, a per-key accuracy heatmap, your least accurate keys and your practice streak.
+- Everything is saved to `~/.local/share/typing-tutor/progress.json` (progress files from older
+  versions are migrated automatically into the QWERTY course).
+- **Statistics** shows a WPM trend, timed-test bests, common mix-ups, a per-key accuracy heatmap,
+  your least accurate keys and your practice streak.
