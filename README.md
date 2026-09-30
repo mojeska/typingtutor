@@ -1,6 +1,7 @@
 # Typing Tutor
 
-A terminal touch-typing tutor for QWERTY, Dvorak and Colemak keyboards. Pure Python standard library (curses), no dependencies.
+A terminal touch-typing tutor for QWERTY, Dvorak and Colemak keyboards, with an adaptive typing game,
+per-person profiles and a little ASCII mascot. Pure Python standard library (curses), no dependencies.
 
 ## Run
 
@@ -10,7 +11,7 @@ python3 typing_tutor.py --user Jeff          # start straight into a profile (cr
 python3 typing_tutor.py --user Jeff --reset  # erase that profile's progress
 ```
 
-Needs a terminal of at least 60x20.
+Needs Python 3.10+ and a terminal of at least 60x20.
 
 ## Method
 
@@ -82,3 +83,9 @@ restore it.
   before profiles existed (`progress.json`) is moved into the first profile you create.
 - **Statistics** shows a WPM trend, timed-test bests, game high score, common mix-ups, a per-key accuracy heatmap,
   your least accurate keys and your practice streak.
+
+## License
+
+[MIT](LICENSE) © 2026 Jeff Rainey. The mascot faces come from
+[fp-bits/mascota-ascii](https://github.com/fp-bits/mascota-ascii) (MIT, © 2024 fp-bits); its notice
+is included in [LICENSE](LICENSE).

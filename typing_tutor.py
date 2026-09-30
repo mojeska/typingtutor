@@ -14,6 +14,8 @@ Teaching approach (the classic touch-typing method used by most courses):
   * Per-key error and speed stats drive a "weak keys" practice mode, and
     the keys you type by mistake drive "confused pairs" contrast drills.
   * Timed tests (1, 2, 5 minutes) and typing your own text files.
+  * Falling Words: a game that uses only the keys you've learned, starts at
+    your pace and speeds up level by level, with a reacting ASCII mascot.
   * Lessons are defined by physical key position, so the same course works
     for every layout. Dvorak/Colemak can be learned on a QWERTY system by
     letting the tutor translate keys.
@@ -21,9 +23,17 @@ Teaching approach (the classic touch-typing method used by most courses):
 WPM uses the standard definition: (characters typed / 5) per minute.
 Each person has a profile; progress is saved to
 $XDG_DATA_HOME/typing-tutor/profiles/<name>.json.
+
+The file reads top to bottom: course and word data, keyboard model, exercise
+generation, progress storage, profiles, drawing helpers and mascot, typing
+screens, practice modes, the game, then menus and the command line.
+
+Pure Python standard library; MIT licence (see LICENSE).
 """
 import argparse
+import contextlib
 import curses
+import functools
 import glob
 import json
 import locale
@@ -40,8 +50,8 @@ PROFILES_DIR = DATA_DIR / "profiles"
 LEGACY_FILE = DATA_DIR / "progress.json"  # single-user progress from before profiles
 SETTINGS_FILE = DATA_DIR / "settings.json"
 DATA_FILE = LEGACY_FILE  # the active profile's file, set by open_profile()
-PASS_ACCURACY = 95.0
-EXERCISE_TOKENS = 30
+PASS_ACCURACY = 95.0  # % accuracy needed to pass a lesson (plus that lesson's WPM goal)
+EXERCISE_TOKENS = 30  # words/drills per exercise
 
 # The course, by physical key position (row, column) so it works on any layout.
 # Rows: 0 number, 1 top, 2 home, 3 bottom. {0}/{1} in tips are the key names.
@@ -87,6 +97,7 @@ LESSON_PLAN = [
          tip="Everything together. Aim for a steady rhythm rather than bursts of speed."),
 ]
 
+# Common English words; each exercise uses only the ones spelled with keys already taught.
 _WORDS = """
 a add adds ads all alas ask asks dad dads fad fads fall falls flask lad lads lass sad salad salsa
 as has had half hall halls hash gas glad flag flags flash shall slash lash gash dash hag jag sag
@@ -127,6 +138,7 @@ well went were west where which why wind winter wish without woman wonder young 
 """
 WORDS = sorted({w for w in _WORDS.split() if w.isalpha()})
 
+# Full-keyboard practice (pangrams and typing advice) for the last lesson and free typing.
 SENTENCES = [
     "The quick brown fox jumps over the lazy dog.",
     "Pack my box with five dozen liquor jugs.",
@@ -169,7 +181,7 @@ LAYOUTS = {
                     rows=("`1234567890-=", "qwfpgjluy;[]", "arstdhneio'", "zxcvbkm,./"),
                     shifted=("~!@#$%^&*()_+", "QWFPGJLUY:{}", 'ARSTDHNEIO"', "ZXCVBKM<>?")),
 }
-ROW_OFFSETS = (0, 6, 7, 9)
+ROW_OFFSETS = (0, 6, 7, 9)  # on-screen indent of each keyboard row, like a real staggered keyboard
 KB_WIDTH = 56
 # Finger for each column of the letter rows; the number row sits half a key left.
 COL_FINGERS = ["left pinky", "left ring", "left middle", "left index", "left index",
@@ -178,15 +190,16 @@ KEY_NAMES = {",": "comma", ".": "period", "/": "slash", ";": "semicolon",
              "'": "apostrophe", "-": "hyphen", "[": "left bracket", "=": "equals"}
 
 # Set by set_layout(): the active layout's keyboard, fingers and course.
-LAYOUT = "qwerty"
 KB_ROWS, FINGERS, SHIFTED, TYPEABLE, REMAP, LESSONS = [], {}, {}, set(), {}, []
 
 
 def key_name(k):
+    """How a key is named in lesson tips: letters in capitals, symbols spelled out."""
     return KEY_NAMES.get(k, k.upper())
 
 
 def build_lessons(rows):
+    """Turn LESSON_PLAN's key positions into this layout's actual keys, titles and tips."""
     lessons = []
     for plan in LESSON_PLAN:
         lesson = dict(plan)
@@ -204,22 +217,21 @@ def build_lessons(rows):
 
 def set_layout(key, remap=False):
     """Activate a layout. With remap, keys from a QWERTY system are translated."""
-    global LAYOUT, KB_ROWS, FINGERS, SHIFTED, TYPEABLE, REMAP, LESSONS
+    global KB_ROWS, FINGERS, SHIFTED, TYPEABLE, REMAP, LESSONS
     lay = LAYOUTS[key]
     rows, shifted = lay["rows"], lay["shifted"]
-    LAYOUT = key
-    KB_ROWS = list(zip(rows, ROW_OFFSETS))
+    KB_ROWS = list(zip(rows, ROW_OFFSETS, strict=True))
     FINGERS = {" ": "either thumb"}
     for r, row in enumerate(rows):
         for c, k in enumerate(row):
             col = max(0, c - (r == 0))
             FINGERS[k] = COL_FINGERS[col] if col < len(COL_FINGERS) else "right pinky"
-    SHIFTED = {s: u for srow, urow in zip(shifted, rows) for s, u in zip(srow, urow)
-               if not s.isalpha()}
+    SHIFTED = {s: u for srow, urow in zip(shifted, rows, strict=True)
+               for s, u in zip(srow, urow, strict=True) if not s.isalpha()}
     TYPEABLE = set("".join(rows + shifted)) | {" "}
     qw = LAYOUTS["qwerty"]
-    REMAP = {q: k for qrow, krow in zip(qw["rows"] + qw["shifted"], rows + shifted)
-             for q, k in zip(qrow, krow) if q != k} if remap else {}
+    REMAP = {q: k for qrow, krow in zip(qw["rows"] + qw["shifted"], rows + shifted, strict=True)
+             for q, k in zip(qrow, krow, strict=True) if q != k} if remap else {}
     LESSONS = build_lessons(rows)
 
 
@@ -259,6 +271,7 @@ def lesson_chars(upto):
 
 
 def pseudo_word(letters, focus):
+    """A made-up 2-5 letter 'word' from `letters`, favouring the `focus` keys."""
     return "".join(random.choice(focus) if focus and random.random() < 0.4 else random.choice(letters)
                    for _ in range(random.randint(2, 5)))
 
@@ -275,6 +288,7 @@ def key_drill(new, letters, new_caps):
 
 
 def attach(word, sym, pool):
+    """Add punctuation to a word the way it's used in real text (e.g. word's, a-b, end.)."""
     if sym in "/-":
         return word + sym + random.choice(pool)
     if sym == "'":
@@ -378,6 +392,7 @@ def next_chunk(text, offset, size=300):
 
 
 def lesson_text(i):
+    """Fresh practice text for lesson i."""
     lesson = LESSONS[i]
     if lesson.get("sentences"):
         return sentence_text()
@@ -390,6 +405,7 @@ def lesson_text(i):
 # ---------------------------------------------------------------------------
 
 def load_progress():
+    """Read the active profile, filling in defaults and upgrading old formats."""
     try:
         data = json.loads(DATA_FILE.read_text())
     except FileNotFoundError:
@@ -429,11 +445,16 @@ def layout_sessions(prog, games=False):
 
 
 def save_progress(prog):
+    """Write the active profile atomically (write a temp file, then swap it in)."""
     DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
     tmp = DATA_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(prog, indent=1))
     tmp.replace(DATA_FILE)
 
+
+# ---------------------------------------------------------------------------
+# Profiles: one progress file per person
+# ---------------------------------------------------------------------------
 
 def slugify(name):
     """File-name-safe version of a profile name (case-insensitive)."""
@@ -442,6 +463,7 @@ def slugify(name):
 
 
 def profile_path(name):
+    """Where the profile called `name` is stored."""
     return PROFILES_DIR / f"{slugify(name)}.json"
 
 
@@ -457,6 +479,7 @@ def list_profiles():
 
 
 def load_settings():
+    """App-wide settings shared by all profiles (currently just the last user)."""
     try:
         return json.loads(SETTINGS_FILE.read_text())
     except (OSError, json.JSONDecodeError):
@@ -474,7 +497,15 @@ def open_profile(path, name):
     return prog
 
 
+def adopt_legacy(path):
+    """Progress saved before profiles existed goes to the first profile created."""
+    if LEGACY_FILE.exists() and not path.exists() and not list_profiles():
+        PROFILES_DIR.mkdir(parents=True, exist_ok=True)
+        LEGACY_FILE.replace(path)
+
+
 def remember_last(stem):
+    """Preselect this profile next time the picker opens."""
     settings = load_settings()
     settings["last_profile"] = stem
     SETTINGS_FILE.write_text(json.dumps(settings))
@@ -576,6 +607,7 @@ def confused_pairs(prog, n=3):
 
 
 def practice_streak(sessions):
+    """Consecutive days with practice, ending today (or yesterday if not yet today)."""
     days = {s["date"][:10] for s in sessions}
     d = date.today()
     if d.isoformat() not in days:
@@ -592,10 +624,12 @@ def practice_streak(sessions):
 # ---------------------------------------------------------------------------
 
 def C(n):
+    """Colour pair n, or plain text on terminals without colour."""
     return curses.color_pair(n) if curses.has_colors() else 0
 
 
 def init_colors():
+    """Set up the colour pairs, keeping the terminal's own background."""
     if not curses.has_colors():
         return
     curses.start_color()
@@ -611,15 +645,19 @@ def init_colors():
     curses.init_pair(ERRBG, curses.COLOR_WHITE, curses.COLOR_RED)
 
 
+def show_cursor(visible):
+    """Show or hide the terminal cursor (some terminals can't, which is fine)."""
+    with contextlib.suppress(curses.error):
+        curses.curs_set(1 if visible else 0)
+
+
 def put(scr, y, x, s, attr=0):
     """addstr that clips to the window instead of raising."""
     h, w = scr.getmaxyx()
     if not 0 <= y < h or not 0 <= x < w:
         return
-    try:
+    with contextlib.suppress(curses.error):  # writing the bottom-right cell raises after succeeding
         scr.addstr(y, x, s[:w - x], attr)
-    except curses.error:
-        pass  # writing the bottom-right cell raises after succeeding
 
 
 def footer(scr, y, x, text):
@@ -633,6 +671,10 @@ def footer(scr, y, x, text):
             put(scr, y, x, part)
         x += len(part)
 
+
+# ---------------------------------------------------------------------------
+# Mascot (faces from fp-bits/mascota-ascii)
+# ---------------------------------------------------------------------------
 
 def text_width(s):
     """Terminal columns taken by s (wide CJK characters count 2, combining marks 0)."""
@@ -654,13 +696,14 @@ GLAD_FACES = {"happy", "dancing", "celebrating", "hugging"}
 
 
 def face_attr(mood):
+    """Mascot colour: red when upset, green when happy, cyan otherwise."""
     color = RED if mood in SAD_FACES else GREEN if mood in GLAD_FACES else MIDDLE
     return C(color) | curses.A_BOLD
 
 
 def greeting_face():
     """A face for the main menu title: sleepy late at night, otherwise a random friendly one."""
-    if datetime.now().hour >= 23 or datetime.now().hour < 5:
+    if not 5 <= datetime.now().hour < 23:
         return "sleeping"
     return random.choice(["normal", "happy", "dancing", "celebrating", "hugging", "surprised",
                           "right", "up"])
@@ -681,15 +724,18 @@ class Mascot:
         self.blink_in = random.uniform(3, 6)
 
     def react(self, mood, secs=1.0):
+        """Show `mood` for `secs` seconds."""
         self.mood, self.hold = mood, secs
 
     def tick(self, dt):
+        """Advance the mascot's timers by dt seconds."""
         self.hold -= dt
         self.blink_in -= dt
         if self.blink_in < -0.15:
             self.blink_in = random.uniform(3, 6)
 
     def face(self, idle_mood):
+        """The face to show now: a recent reaction, a blink, or `idle_mood`."""
         if self.hold > 0:
             return self.mood
         if idle_mood == "normal" and self.blink_in < 0:
@@ -698,10 +744,12 @@ class Mascot:
 
 
 def center_x(scr, width):
+    """Column that centres something `width` wide."""
     return max(0, (scr.getmaxyx()[1] - width) // 2)
 
 
 def fmt_time(secs):
+    """Seconds as m:ss."""
     secs = int(secs)
     return f"{secs // 60}:{secs % 60:02d}"
 
@@ -721,6 +769,7 @@ def finger_attr(chars):
 
 
 def draw_keyboard(scr, y, x, attr_for, highlight=()):
+    """Draw the on-screen keyboard; attr_for(key) picks each key's style."""
     hl = curses.A_REVERSE | curses.A_BOLD
     for r, (keys, off) in enumerate(KB_ROWS):
         for i, k in enumerate(keys):
@@ -732,6 +781,7 @@ def draw_keyboard(scr, y, x, attr_for, highlight=()):
 
 
 def draw_finger_legend(scr, y):
+    """The 'which colour is which finger' key under the keyboard."""
     parts = [("Fingers: ", 0), ("pinky ", C(PINKY)), ("ring ", C(RING)),
              ("middle ", C(MIDDLE)), ("index ", C(INDEX)), ("thumb", 0)]
     x = center_x(scr, sum(len(p) for p, _ in parts))
@@ -741,6 +791,7 @@ def draw_finger_legend(scr, y):
 
 
 def wait_key(scr):
+    """Block until a real key is pressed (ignoring terminal resizes)."""
     scr.timeout(-1)
     while True:
         ch = scr.get_wch()
@@ -749,6 +800,7 @@ def wait_key(scr):
 
 
 def message(scr, title, lines):
+    """A simple information screen; any key closes it."""
     scr.erase()
     put(scr, 1, 2, title, curses.A_BOLD | C(MIDDLE))
     for i, line in enumerate(lines):
@@ -804,6 +856,7 @@ def menu(scr, title, items, header=(), sel=0, mood=None, hotkeys=None):
 # Typing screens
 # ---------------------------------------------------------------------------
 
+@functools.lru_cache(maxsize=4)
 def wrap(text, width):
     """Split text into (start_index, line) chunks, breaking after spaces."""
     lines, start = [], 0
@@ -841,7 +894,9 @@ def intro(scr, heading, lines, text, highlight):
             return False
 
 
-def draw_exercise(scr, title, text, pos, wrong, missed, elapsed, errors, limit=None):
+def draw_exercise(scr, title, text, kb_attr, pos, wrong, missed, elapsed, errors, limit=None):
+    """One frame of a typing exercise: stats line, the text (typed part coloured),
+    the keyboard with the next key highlighted, and which finger to use."""
     scr.erase()
     h, w = scr.getmaxyx()
     if h < 20 or w < 60:
@@ -876,7 +931,7 @@ def draw_exercise(scr, title, text, pos, wrong, missed, elapsed, errors, limit=N
     want = text[pos]
     base, shifted = base_key(want)
     highlight = {base} | ({shift_side(base)} if shifted else set())
-    draw_keyboard(scr, 9, center_x(scr, KB_WIDTH), finger_attr(text), highlight)
+    draw_keyboard(scr, 9, center_x(scr, KB_WIDTH), kb_attr, highlight)
     hint = f"Next: {'space' if want == ' ' else want}  -  {FINGERS.get(base, '?')}"
     if shifted:
         hint += f" + {'right' if shift_side(base) == 'shift_r' else 'left'} pinky on Shift"
@@ -898,12 +953,13 @@ def run_exercise(scr, title, text, limit=None):
     keys = {}  # char -> [hits, errors, seconds, timed]
     confusions = {}  # intended + typed char -> count
     timed_out = False
+    kb_attr = finger_attr(text)  # the text doesn't change, so work out key colours once
     while pos < len(text):
         now = time.monotonic()
         if limit and start and now - start >= limit:
             timed_out = True
             break
-        draw_exercise(scr, title, text, pos, wrong, missed,
+        draw_exercise(scr, title, text, kb_attr, pos, wrong, missed,
                       now - start if start else 0.0, errors, limit)
         try:
             ch = scr.get_wch()
@@ -1006,6 +1062,7 @@ def results(scr, heading, res, goal_wpm=None, passed=None, best=None, last_lesso
 # ---------------------------------------------------------------------------
 
 def play_lesson(scr, prog, i):
+    """Run lesson i, and keep going (retry / next lesson) until the user leaves."""
     while True:
         lesson = LESSONS[i]
         text = lesson_text(i)
@@ -1038,6 +1095,7 @@ def taught(prog):
 
 
 def play_weak(scr, prog):
+    """Drill the user's slowest and least accurate keys."""
     chars, caps = taught(prog)
     while True:
         weak = weak_keys(prog, chars)
@@ -1061,6 +1119,7 @@ def play_weak(scr, prog):
 
 
 def play_confusions(scr, prog):
+    """Contrast drills for keys the user keeps mixing up."""
     heading = "Confused-pair drills"
     while True:
         pairs = confused_pairs(prog)
@@ -1087,10 +1146,11 @@ def play_confusions(scr, prog):
             return
 
 
-TEST_LENGTHS = (60, 120, 300)
+TEST_LENGTHS = (60, 120, 300)  # timed test lengths in seconds
 
 
 def play_test(scr, prog):
+    """Timed test: pick 1, 2 or 5 minutes, then type until the clock runs out."""
     def best(limit):
         return max((s["wpm"] for s in layout_sessions(prog)
                     if s["mode"] == "test" and s.get("limit") == limit), default=None)
@@ -1132,8 +1192,12 @@ def play_test(scr, prog):
             return
 
 
+# ---------------------------------------------------------------------------
+# Falling Words game
+# ---------------------------------------------------------------------------
+
 GAME_LIVES = 5
-CLEARS_PER_LEVEL = 10
+CLEARS_PER_LEVEL = 10  # items cleared per level
 GAME_ZONES = 5  # the field is split top to bottom; clearing an item in the top zone scores x5
 
 
@@ -1178,6 +1242,7 @@ def game_item(level, ctx):
 
 
 def level_news(level, ctx):
+    """What the level-up banner announces."""
     if level == 2 and len(ctx["pool"]) >= 8:
         return "Words incoming!"
     if level == 3:
@@ -1210,6 +1275,12 @@ def run_game(scr, ctx, wpm):
     paused = quit_game = False
     mascot, recent_errors, last_key = Mascot(), [], time.monotonic()
     last = time.monotonic()
+
+    def oops(now):
+        """A wrong key: the mascot winces, or glares after 3 mistakes within 2 seconds."""
+        recent_errors[:] = [t for t in recent_errors if now - t < 2] + [now]
+        mascot.react(*(("disapproval", 1.5) if len(recent_errors) >= 3 else ("frustrated", 0.6)))
+
     while lives > 0 and not quit_game:
         h, w = scr.getmaxyx()
         small = h < 20 or w < 60
@@ -1233,6 +1304,8 @@ def run_game(scr, ctx, wpm):
                     if not any(it["y"] < 3 / rows and x - 2 < it["x"] + len(it["text"])
                                and it["x"] - 2 < x + len(text) for it in items):
                         break
+                # Fall time = how long this item should take to type x a margin that
+                # shrinks each level; the gap to the next item shrinks the same way.
                 slack = max(1.4, 5.0 * 0.88 ** (level - 1))
                 items.append(dict(text=text, x=x, y=0.0, typed=0,
                                   speed=ease / (type_secs(len(text), wpm) * slack)))
@@ -1255,7 +1328,7 @@ def run_game(scr, ctx, wpm):
             banner_ttl -= dt
             flash -= dt
 
-        # --- draw ---
+        # --- draw: header, field with zone marks, items, mascot, hint ---
         scr.erase()
         if small:
             put(scr, 0, 0, "Please enlarge the terminal to at least 60x20.")
@@ -1328,7 +1401,7 @@ def run_game(scr, ctx, wpm):
                 footer(scr, h - 1, 2, "Esc: pause   Backspace: let go of a word")
         scr.refresh()
 
-        # --- input ---
+        # --- input: lock onto an item by its first key, then type the rest ---
         try:
             ch = scr.get_wch()
         except curses.error:
@@ -1353,17 +1426,12 @@ def run_game(scr, ctx, wpm):
             continue
         ch = REMAP.get(ch, ch)
         now = last_key = time.monotonic()
-
-        def oops():
-            recent_errors[:] = [t for t in recent_errors if now - t < 2] + [now]
-            mascot.react(*(("disapproval", 1.5) if len(recent_errors) >= 3 else ("frustrated", 0.6)))
-
         if target is None:
             cands = [it for it in items if it["text"][0] == ch]
             if not cands:
                 errors += 1
                 combo = 0
-                oops()
+                oops(now)
                 continue
             target = max(cands, key=lambda it: it["y"])  # the most urgent one
         want = target["text"][target["typed"]]
@@ -1373,7 +1441,7 @@ def run_game(scr, ctx, wpm):
             confusions[want + ch] = confusions.get(want + ch, 0) + 1
             errors += 1
             combo = 0
-            oops()
+            oops(now)
             continue
         stat[0] += 1
         if target["typed"] and last_hit and now - last_hit < 2:
@@ -1446,9 +1514,11 @@ def game_over(scr, res, best):
 
 
 def play_game(scr, prog):
+    """Falling Words: intro screen, game, game-over screen, repeat."""
     while True:
         ctx = game_context(prog)
         recent = layout_sessions(prog)[-10:]
+        # Starting pace comes from recent (non-game) typing speed, within sensible bounds.
         wpm = min(120.0, max(8.0, sum(s["wpm"] for s in recent) / len(recent))) if recent else 12.0
         best = dict(lay(prog)["game_best"])
         joins = [name for name, on in (("words", len(ctx["pool"]) >= 8), ("capitals", ctx["caps"]),
@@ -1474,7 +1544,12 @@ def play_game(scr, prog):
             return
 
 
+# ---------------------------------------------------------------------------
+# Free typing and your own text
+# ---------------------------------------------------------------------------
+
 def play_free(scr, prog):
+    """Random real sentences using the whole keyboard."""
     while True:
         text = sentence_text()
         heading = "Free typing"
@@ -1495,10 +1570,7 @@ def prompt(scr, title, lines, default="", complete=True):
     Returns str or None."""
     buf, matches = default, []
     scr.timeout(-1)
-    try:
-        curses.curs_set(1)
-    except curses.error:
-        pass
+    show_cursor(True)
     try:
         while True:
             scr.erase()
@@ -1539,13 +1611,11 @@ def prompt(scr, title, lines, default="", complete=True):
             elif isinstance(ch, str) and ch.isprintable():
                 buf += ch
     finally:
-        try:
-            curses.curs_set(0)
-        except curses.error:
-            pass
+        show_cursor(False)
 
 
 def play_custom(scr, prog):
+    """Work through a text file of the user's choice, remembering their place."""
     custom = prog["custom"]
     path = custom.get("path")
     if path:
@@ -1602,7 +1672,12 @@ def play_custom(scr, prog):
             return
 
 
+# ---------------------------------------------------------------------------
+# Layouts, lesson list and statistics
+# ---------------------------------------------------------------------------
+
 def choose_layout(scr, prog):
+    """Switch keyboard layout, and for Dvorak/Colemak whether to translate keys."""
     keys = list(LAYOUTS)
     items = []
     for k in keys:
@@ -1634,6 +1709,7 @@ def choose_layout(scr, prog):
 
 
 def choose_lesson(scr, prog):
+    """Lesson list with progress; returns the chosen lesson or None."""
     lp = lay(prog)
     items = []
     for i, lesson in enumerate(LESSONS):
@@ -1646,12 +1722,14 @@ def choose_lesson(scr, prog):
 
 
 def pick_lesson(scr, prog):
+    """Choose a lesson from the list and play it."""
     i = choose_lesson(scr, prog)
     if i is not None:
         play_lesson(scr, prog, i)
 
 
 def sparkline(values):
+    """A one-line bar chart of the values."""
     blocks = "▁▂▃▄▅▆▇█"
     lo, hi = min(values), max(values)
     span = (hi - lo) or 1
@@ -1659,11 +1737,13 @@ def sparkline(values):
 
 
 def layout_label(prog):
+    """The active layout's name as shown in menus."""
     name = LAYOUTS[prog["layout"]]["name"]
     return name + (" (translated from QWERTY)" if prog["remap"] else "")
 
 
 def summary_lines(prog):
+    """The few progress lines shown under the main menu title."""
     all_sessions = prog["sessions"]
     sessions = layout_sessions(prog)
     passed = sum(1 for r in lay(prog)["lessons"].values() if r.get("passed"))
@@ -1682,6 +1762,7 @@ def summary_lines(prog):
 
 
 def stats_screen(scr, prog):
+    """Statistics: totals, bests, mix-ups, WPM trend and a per-key accuracy map."""
     sessions = layout_sessions(prog)
     if not sessions:
         message(scr, "Statistics", [f"No {LAYOUTS[prog['layout']]['name']} sessions yet - "
@@ -1720,9 +1801,9 @@ def stats_screen(scr, prog):
         put(scr, 3 + i, x0, line)
     y = 4 + len(lines)
     trend = [s["wpm"] for s in sessions[-50:]]
-    put(scr, y, x0, f"WPM trend (last {len(trend)}):  {min(trend):.0f} ", 0)
-    put(scr, y, x0 + 26 + len(f"{min(trend):.0f}"), sparkline(trend) + f" {max(trend):.0f}",
-        C(GREEN))
+    label = f"WPM trend (last {len(trend)}):  {min(trend):.0f} "
+    put(scr, y, x0, label)
+    put(scr, y, x0 + len(label), sparkline(trend) + f" {max(trend):.0f}", C(GREEN))
     y += 2
     put(scr, y, x0, "Per-key accuracy:", 0)
     for text, attr, dx in (("97%+", C(GREEN), 19), ("92-97%", C(YELLOW), 25),
@@ -1743,12 +1824,18 @@ def stats_screen(scr, prog):
     wait_key(scr)
 
 
+# ---------------------------------------------------------------------------
+# Profile picker, main menu and command line
+# ---------------------------------------------------------------------------
+
 def friendly_day(iso):
+    """'today', 'yesterday' or 'N days ago' for an ISO date."""
     days = (date.today() - date.fromisoformat(iso[:10])).days
     return "today" if days == 0 else "yesterday" if days == 1 else f"{days} days ago"
 
 
 def profile_label(prog):
+    """One line describing a profile in the picker."""
     lk = prog.get("layout") if prog.get("layout") in LAYOUTS else "qwerty"
     passed = sum(1 for r in prog.get("layouts", {}).get(lk, {}).get("lessons", {}).values()
                  if r.get("passed"))
@@ -1758,6 +1845,7 @@ def profile_label(prog):
 
 
 def ask_name(scr, lines):
+    """Ask for a profile name (re-asks if left blank). Returns None if cancelled."""
     while True:
         name = prompt(scr, "Typing Tutor", lines + ["", "What's your name?"], complete=False)
         if name is None:
@@ -1781,6 +1869,7 @@ def rename_dialog(scr, path, prog):
 
 
 def remove_dialog(scr, path, prog):
+    """Confirm and remove a profile. Returns its path if kept, or None if removed."""
     name = prog.get("name", path.stem)
     sessions = len(prog.get("sessions", []))
     passed = sum(1 for lk in prog.get("layouts", {}).values()
@@ -1812,8 +1901,7 @@ def choose_profile(scr, current=None):
                     "Your progress so far will be kept under your name."])
                 if name is None:
                     return None
-                PROFILES_DIR.mkdir(parents=True, exist_ok=True)
-                LEGACY_FILE.replace(profile_path(name))
+                adopt_legacy(profile_path(name))
             else:
                 name = ask_name(scr, ["Welcome! Everyone who uses this gets their own profile,",
                                       "with their own lessons, statistics and game scores."])
@@ -1829,7 +1917,7 @@ def choose_profile(scr, current=None):
             if current and current.exists():  # back to the user who was already typing
                 return open_profile(current, json.loads(current.read_text()).get("name", current.stem))
             return None
-        if isinstance(i, tuple):
+        if isinstance(i, tuple):  # r / d pressed on a profile
             key, i = i
             if i < len(profiles):
                 path = profiles[i][0]
@@ -1878,11 +1966,11 @@ def main_menu(scr, prog):
 
 
 def main(scr, user=None):
-    try:
-        curses.curs_set(0)
-    except curses.error:
-        pass
+    """The whole app: pick a profile, run the main menu, repeat on 'Switch user'."""
+    show_cursor(False)
     init_colors()
+    if user:
+        adopt_legacy(profile_path(user))
     current = None
     while True:
         prog = open_profile(profile_path(user), user) if user else choose_profile(scr, current)
@@ -1893,6 +1981,7 @@ def main(scr, user=None):
 
 
 def cli():
+    """Command-line entry point."""
     ap = argparse.ArgumentParser(description="Terminal touch-typing tutor (QWERTY, Dvorak, Colemak).")
     ap.add_argument("--user", metavar="NAME", help="start as this profile (created if new)")
     ap.add_argument("--reset", action="store_true", help="erase all saved progress for --user NAME")
@@ -1913,10 +2002,8 @@ def cli():
         random.seed(args.seed)
     locale.setlocale(locale.LC_ALL, "")
     os.environ.setdefault("ESCDELAY", "25")
-    try:
+    with contextlib.suppress(KeyboardInterrupt):  # Ctrl-C just quits
         curses.wrapper(main, args.user)
-    except KeyboardInterrupt:
-        pass
 
 
 if __name__ == "__main__":
