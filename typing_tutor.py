@@ -28,6 +28,7 @@ import json
 import locale
 import os
 import random
+import re
 import time
 import unicodedata
 from datetime import date, datetime, timedelta
@@ -540,6 +541,18 @@ def put(scr, y, x, s, attr=0):
         pass  # writing the bottom-right cell raises after succeeding
 
 
+def footer(scr, y, x, text):
+    """Key hints like "Enter: start   Esc: back" - key names bold cyan, the rest plain."""
+    for part in re.split(r"(\s{2,})", text):
+        key, sep, desc = part.partition(": ")
+        if sep:
+            put(scr, y, x, key, C(MIDDLE) | curses.A_BOLD)
+            put(scr, y, x + len(key), sep + desc)
+        else:
+            put(scr, y, x, part)
+        x += len(part)
+
+
 def center_x(scr, width):
     return max(0, (scr.getmaxyx()[1] - width) // 2)
 
@@ -596,7 +609,7 @@ def message(scr, title, lines):
     put(scr, 1, 2, title, curses.A_BOLD | C(MIDDLE))
     for i, line in enumerate(lines):
         put(scr, 3 + i, 4, line)
-    put(scr, scr.getmaxyx()[0] - 1, 2, "Press any key", curses.A_DIM)
+    footer(scr, scr.getmaxyx()[0] - 1, 2, "Press any key")
     scr.refresh()
     wait_key(scr)
 
@@ -623,7 +636,7 @@ def menu(scr, title, items, header=(), sel=0):
             label, en = items[i]
             attr = curses.A_REVERSE if i == sel else (0 if en else curses.A_DIM)
             put(scr, y + i - top, 4, f" {label} ", attr)
-        put(scr, h - 1, 2, "Up/Down or j/k: move   Enter: select   Esc/q: back", curses.A_DIM)
+        footer(scr, h - 1, 2, "Up/Down or j/k: move   Enter: select   Esc/q: back")
         scr.refresh()
         ch = scr.get_wch()
         if ch in (curses.KEY_UP, "k"):
@@ -668,7 +681,7 @@ def intro(scr, heading, lines, text, highlight):
         ky = 4 + len(lines)
         draw_keyboard(scr, ky, center_x(scr, KB_WIDTH), finger_attr(text), highlight)
         draw_finger_legend(scr, ky + 6)
-        put(scr, h - 2, x0, "Enter/Space: start    Esc: back", curses.A_DIM)
+        footer(scr, h - 2, x0, "Enter/Space: start    Esc: back")
         scr.refresh()
         ch = scr.get_wch()
         if ch in ("\n", "\r", " ", curses.KEY_ENTER):
@@ -719,7 +732,7 @@ def draw_exercise(scr, title, text, pos, wrong, missed, elapsed, errors, limit=N
     put(scr, 15, center_x(scr, len(hint)), hint, curses.A_BOLD)
     if missed:
         put(scr, 16, center_x(scr, 30), "Oops - press the correct key.", C(RED))
-    put(scr, h - 1, 2, "Esc: back to menu (this attempt is not saved)", curses.A_DIM)
+    footer(scr, h - 1, 2, "Esc: back to menu (this attempt is not saved)")
     scr.refresh()
 
 
@@ -821,7 +834,7 @@ def results(scr, heading, res, goal_wpm=None, passed=None, best=None, last_lesso
         put(scr, 1, x0, heading, curses.A_BOLD | C(MIDDLE))
         for i, (text, attr) in enumerate(lines):
             put(scr, 3 + i, x0, text, attr)
-        put(scr, h - 2, x0, f"Enter: {enter}    r: retry    Esc: menu", curses.A_DIM)
+        footer(scr, h - 2, x0, f"Enter: {enter}    r: retry    Esc: menu")
         scr.refresh()
         ch = wait_key(scr)
         if ch in ("\n", "\r", curses.KEY_ENTER):
@@ -995,7 +1008,7 @@ def prompt(scr, title, lines, default=""):
             y = 4 + len(lines)
             for i, m in enumerate(matches[:h - y - 4]):
                 put(scr, y + 2 + i, 6, m, curses.A_DIM)
-            put(scr, h - 1, 2, "Enter: OK   Tab: complete   Ctrl-U: clear   Esc: back", curses.A_DIM)
+            footer(scr, h - 1, 2, "Enter: OK   Tab: complete   Ctrl-U: clear   Esc: back")
             shown = buf[-(w - 8):]
             put(scr, y, 4, "> " + shown)
             scr.move(y, min(w - 1, 6 + len(shown)))
@@ -1220,7 +1233,7 @@ def stats_screen(scr, prog):
             put(scr, y + 1 + i, x0 + 2,
                 f"{'space' if k == ' ' else k:>5}   {100 - err * 100:5.1f}% accurate   "
                 f"{avg * 1000:4.0f} ms avg")
-    put(scr, scr.getmaxyx()[0] - 1, 2, "Press any key", curses.A_DIM)
+    footer(scr, scr.getmaxyx()[0] - 1, 2, "Press any key")
     scr.refresh()
     wait_key(scr)
 
